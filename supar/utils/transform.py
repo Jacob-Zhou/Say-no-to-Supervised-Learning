@@ -152,13 +152,14 @@ class CoNLL(Transform):
           https://www.aclweb.org/anthology/W06-2920/
     """
 
-    fields = ['ID', 'FORM', 'LEMMA', 'CPOS', 'POS', 'FEATS', 'HEAD', 'DEPREL', 'PHEAD', 'PDEPREL']
+    fields = ['SENTID', 'ID', 'FORM', 'LEMMA', 'CPOS', 'POS', 'FEATS', 'HEAD', 'DEPREL', 'PHEAD', 'PDEPREL']
 
-    def __init__(self,
+    def __init__(self, SENTID=0,
                  ID=None, FORM=None, LEMMA=None, CPOS=None, POS=None,
                  FEATS=None, HEAD=None, DEPREL=None, PHEAD=None, PDEPREL=None):
         super().__init__()
 
+        self.SENTID = SENTID
         self.ID = ID
         self.FORM = FORM
         self.LEMMA = LEMMA
@@ -176,7 +177,7 @@ class CoNLL(Transform):
 
     @property
     def tgt(self):
-        return self.HEAD, self.DEPREL
+        return self.SENTID, self.HEAD, self.DEPREL
 
     @classmethod
     def get_arcs(cls, sequence):
@@ -325,10 +326,11 @@ class CoNLL(Transform):
             data = [data] if isinstance(data[0], str) else data
             lines = '\n'.join([self.toconll(i) for i in data]).split('\n')
 
-        i, start, sentences = 0, 0, []
+        sent_id, i, start, sentences = 0, 0, 0, []
         for line in progress_bar(lines, leave=False):
             if not line:
-                sentences.append(CoNLLSentence(self, lines[start:i]))
+                sentences.append(CoNLLSentence(self, sent_id, lines[start:i]))
+                sent_id += 1
                 start = i + 1
             i += 1
         if proj:
@@ -386,7 +388,7 @@ class CoNLLSentence(Sentence):
         12      .       _       _       _       _       3       punct   _       _
     """
 
-    def __init__(self, transform, lines):
+    def __init__(self, transform, sent_id, lines):
         super().__init__(transform)
 
         self.values = []
@@ -400,7 +402,7 @@ class CoNLLSentence(Sentence):
             else:
                 self.annotations[len(self.values)] = line
                 self.values.append(value)
-        self.values = list(zip(*self.values))
+        self.values = [sent_id] + list(zip(*self.values))
 
     def __repr__(self):
         # cover the raw lines

@@ -97,7 +97,7 @@ class CRFDependency(nn.Module):
     """
 
     @torch.enable_grad()
-    def forward(self, scores, mask, real_batch_size, target=None, mbr=False, partial=False, unsuper_loss=False):
+    def forward(self, scores, mask, supervised_mask=None, real_batch_size=None, target=None, mbr=False, partial=False, unsuper_loss=False):
         """
         Args:
             scores (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -137,12 +137,18 @@ class CRFDependency(nn.Module):
         if partial:
             score = self.inside(scores, mask[:real_batch_size], target)
         else:
-            score = scores[:real_batch_size].gather(-1, target.unsqueeze(-1)).squeeze(-1)[mask[:real_batch_size]].sum()
+            score = scores[:real_batch_size][supervised_mask].gather(-1, target[supervised_mask].unsqueeze(-1)).squeeze(-1)[mask[:real_batch_size][supervised_mask]].sum()
 
-        loss = (logZ[:real_batch_size].sum() - score) / mask[:real_batch_size].sum()
+        assert supervised_mask.any() or unsuper_loss
+
+        if supervised_mask.any():
+            loss = (logZ[:real_batch_size][supervised_mask].sum() - score) / mask[:real_batch_size][supervised_mask].sum()
+        else:
+            loss = 0
 
         if unsuper_loss:
-            top1_scores = eisner(scores[:real_batch_size], mask[:real_batch_size], get_scores=True)
+            # top1_scores = eisner(scores[:real_batch_size], mask[:real_batch_size], get_scores=True)
+            top1_scores = logZ[:real_batch_size]
             neg_batch_size = batch_size - real_batch_size
             # [real_batch_size]
             real_logZ = logZ[:real_batch_size, None]

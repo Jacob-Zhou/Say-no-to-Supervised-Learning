@@ -64,14 +64,20 @@ class Field(RawField):
         use_vocab (bool):
             Whether to use a Vocab object. If False, the data in this field should already be numerical.
             Default: True.
+        sequential (bool):
+            Whether the datatype represents sequential data. If False, no tokenization is applied. 
+            Default: True.
         tokenize (function):
             The function used to tokenize strings using this field into sequential examples. Default: None.
         fn (function):
             The function used for preprocessing the examples. Default: None.
+        dtype (torch.dtype):
+            The torch.dtype class that represents a batch of examples of this kind of data. 
+            Default: torch.long.
     """
 
     def __init__(self, name, pad=None, unk=None, bos=None, eos=None,
-                 lower=False, use_vocab=True, tokenize=None, fn=None):
+                 lower=False, use_vocab=True, sequential=True, tokenize=None, fn=None, dtype=torch.int64):
         self.name = name
         self.pad = pad
         self.unk = unk
@@ -80,6 +86,8 @@ class Field(RawField):
         self.lower = lower
         self.use_vocab = use_vocab
         self.tokenize = tokenize
+        self.sequential = sequential
+        self.dtype = dtype
         self.fn = fn
 
         self.specials = [token for token in [pad, unk, bos, eos]
@@ -151,12 +159,14 @@ class Field(RawField):
                 the preprocessed sequence.
         """
 
+
         if self.fn is not None:
             sequence = self.fn(sequence)
         if self.tokenize is not None:
             sequence = self.tokenize(sequence)
-        if self.lower:
+        if self.sequential and self.lower:
             sequence = [str.lower(token) for token in sequence]
+
 
         return sequence
 
@@ -214,11 +224,12 @@ class Field(RawField):
         sequences = [self.preprocess(seq) for seq in sequences]
         if self.use_vocab:
             sequences = [self.vocab[seq] for seq in sequences]
-        if self.bos:
-            sequences = [[self.bos_index] + seq for seq in sequences]
-        if self.eos:
-            sequences = [seq + [self.eos_index] for seq in sequences]
-        sequences = [torch.tensor(seq) for seq in sequences]
+        if self.sequential:
+            if self.bos:
+                sequences = [[self.bos_index] + seq for seq in sequences]
+            if self.eos:
+                sequences = [seq + [self.eos_index] for seq in sequences]
+        sequences = [torch.tensor(seq, dtype=self.dtype) for seq in sequences]
 
         return sequences
 
@@ -233,8 +244,10 @@ class Field(RawField):
         Returns:
             A padded tensor converted to proper device.
         """
-
-        return pad(sequences, self.pad_index).to(self.device)
+        if self.sequential:
+            return pad(sequences, self.pad_index).to(self.device)
+        else:
+            return torch.stack(sequences).to(self.device)
 
 
 class SubwordField(Field):

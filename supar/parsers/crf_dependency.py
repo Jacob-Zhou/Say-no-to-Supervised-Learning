@@ -122,13 +122,15 @@ class CRFDependencyParser(BiaffineDependencyParser):
 
         bar, metric = progress_bar(loader), AttachmentMetric()
 
-        for words, feats, arcs, rels in bar:
+        for supervised_mask, words, feats, arcs, rels in bar:
+            unsuper_loss = self.args.semi_supervised
+            if ~supervised_mask.any() and ~unsuper_loss:
+                continue
             self.optimizer.zero_grad()
             batch_size, seq_len = words.shape
-            neg_sample_time = 1
+            neg_sample_time = self.args.neg_sample
             min_len = (words.ne(self.WORD.pad_index).sum(-1) - 1).min()
-            unsuper_loss = False
-            if seq_len > 1 and batch_size > 1:
+            if unsuper_loss and seq_len > 1 and batch_size > 1:
                 slice_size = seq_len
                 chunk_words, chunk_feats = words.chunk(slice_size, dim=1), feats.chunk(slice_size, dim=1)
                 rand_words, rand_feats = [], []
@@ -143,17 +145,19 @@ class CRFDependencyParser(BiaffineDependencyParser):
                 fake_feats[:, torch.arange(min_len)] = fake_feats[:, rand_step_index]
                 words = torch.cat([words, fake_words], dim=0)
                 feats = torch.cat([feats, fake_feats], dim=0)
-                unsuper_loss = True
+            else:
+                unsuper_loss = False
 
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             s_arc, s_rel = self.model(words, feats)
             loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
-                                          batch_size,
-                                          self.args.mbr,
-                                          self.args.partial,
-                                          unsuper_loss)
+                                          supervised_mask=supervised_mask,
+                                          real_batch_size=batch_size,
+                                          mbr=self.args.mbr,
+                                          partial=self.args.partial,
+                                          unsuper_loss=unsuper_loss)
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
             self.optimizer.step()
@@ -174,16 +178,16 @@ class CRFDependencyParser(BiaffineDependencyParser):
 
         total_loss, metric = 0, AttachmentMetric()
 
-        for words, feats, arcs, rels in loader:
+        for _, words, feats, arcs, rels in loader:
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             batch_size, seq_len = words.shape
             s_arc, s_rel = self.model(words, feats)
+            
             loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
-                                          batch_size,
-                                          self.args.mbr,
-                                          self.args.partial)
+                                          mbr=self.args.mbr,
+                                          partial=self.args.partial)
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask,
                                                      self.args.tree,
                                                      self.args.proj)

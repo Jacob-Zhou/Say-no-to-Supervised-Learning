@@ -76,3 +76,7 @@ def pad(tensors, padding_value=0, total_length=None):
     for i, tensor in enumerate(tensors):
         out_tensor[i][[slice(0, i) for i in tensor.size()]] = tensor
     return out_tensor
+
+
+def assign_supervied_flag(sentence_index, portion):
+    return (sentence_index % portion) == 0

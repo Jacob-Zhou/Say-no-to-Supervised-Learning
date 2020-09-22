@@ -340,7 +340,7 @@ class CRFDependencyModel(BiaffineDependencyModel):
 
         self.crf = CRFDependency()
 
-    def loss(self, s_arc, s_rel, arcs, rels, mask, real_batch_size, mbr=True, partial=False, unsuper_loss=False):
+    def loss(self, s_arc, s_rel, arcs, rels, mask, supervised_mask=None, real_batch_size=None, mbr=True, partial=False, unsuper_loss=False):
         """
         Args:
             s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -366,14 +366,23 @@ class CRFDependencyModel(BiaffineDependencyModel):
         """
 
         batch_size, seq_len = mask.shape
-        arc_loss, arc_probs = self.crf(s_arc, mask, real_batch_size, arcs, mbr, partial, unsuper_loss)
+        if supervised_mask is None:
+            supervised_mask = mask.new_ones(batch_size)
+        if real_batch_size is None:
+            real_batch_size = batch_size
+        arc_loss, arc_probs = self.crf(s_arc, mask, supervised_mask, real_batch_size, arcs, mbr, partial, unsuper_loss)
         # -1 denotes un-annotated arcs
         mask = mask[:real_batch_size]
         if partial:
             mask = mask & arcs.ge(0)
-        s_rel, rels = s_rel[:real_batch_size][mask], rels[mask]
-        s_rel = s_rel[torch.arange(len(rels)), arcs[mask]]
-        rel_loss = self.criterion(s_rel, rels)
+        if not supervised_mask.all():
+            mask = mask & supervised_mask.unsqueeze(-1)
+        if mask.any():
+            s_rel, rels = s_rel[:real_batch_size][mask], rels[mask]
+            s_rel = s_rel[torch.arange(len(rels)), arcs[mask]]
+            rel_loss = self.criterion(s_rel, rels)
+        else:
+            rel_loss = 0
         loss = arc_loss + rel_loss
         return loss, arc_probs
 

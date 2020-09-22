@@ -87,7 +87,7 @@ class Dataset(torch.utils.data.Dataset):
         # numericalize all fields
         self.fields = self.transform(self.sentences)
         # NOTE: the final bucket count is roughly equal to n_buckets
-        self.lengths = [len(i) for i in self.fields[next(iter(self.fields))]]
+        self.lengths = [len(i) for i in self.fields[list(iter(self.fields))[1]]]
         self.buckets = dict(zip(*kmeans(self.lengths, n_buckets)))
         self.loader = DataLoader(dataset=self,
                                  batch_sampler=Sampler(buckets=self.buckets,

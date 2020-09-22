@@ -4,12 +4,13 @@ import os
 
 import torch
 import torch.nn as nn
+from functools import partial
 from supar.models import BiaffineDependencyModel
 from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
 from supar.utils.common import bos, pad, unk
 from supar.utils.field import Field, SubwordField
-from supar.utils.fn import ispunct
+from supar.utils.fn import ispunct, assign_supervied_flag
 from supar.utils.logging import get_logger, progress_bar
 from supar.utils.metric import AttachmentMetric
 from supar.utils.transform import CoNLL
@@ -230,6 +231,9 @@ class BiaffineDependencyParser(Parser):
             return parser
 
         logger.info("Build the fields")
+        get_supervised_mask = partial(assign_supervied_flag, portion=args.portion)
+        SUPERVISED = Field('supervised_mask', use_vocab=False, sequential=False, 
+                         fn=get_supervised_mask, dtype=torch.bool)
         WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
         if args.feat == 'char':
             FEAT = SubwordField('chars', pad=pad, unk=unk, bos=bos, fix_len=args.fix_len)
@@ -248,9 +252,9 @@ class BiaffineDependencyParser(Parser):
         ARC = Field('arcs', bos=bos, use_vocab=False, fn=CoNLL.get_arcs)
         REL = Field('rels', bos=bos)
         if args.feat in ('char', 'bert'):
-            transform = CoNLL(FORM=(WORD, FEAT), HEAD=ARC, DEPREL=REL)
+            transform = CoNLL(SENTID=SUPERVISED, FORM=(WORD, FEAT), HEAD=ARC, DEPREL=REL)
         else:
-            transform = CoNLL(FORM=WORD, CPOS=FEAT, HEAD=ARC, DEPREL=REL)
+            transform = CoNLL(SENTID=SUPERVISED, FORM=WORD, CPOS=FEAT, HEAD=ARC, DEPREL=REL)
 
         train = Dataset(transform, args.train)
         WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
