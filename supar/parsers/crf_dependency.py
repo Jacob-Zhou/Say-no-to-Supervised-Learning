@@ -124,14 +124,36 @@ class CRFDependencyParser(BiaffineDependencyParser):
 
         for words, feats, arcs, rels in bar:
             self.optimizer.zero_grad()
+            batch_size, seq_len = words.shape
+            neg_sample_time = 1
+            min_len = (words.ne(self.WORD.pad_index).sum(-1) - 1).min()
+            unsuper_loss = False
+            if seq_len > 1 and batch_size > 1:
+                slice_size = seq_len
+                chunk_words, chunk_feats = words.chunk(slice_size, dim=1), feats.chunk(slice_size, dim=1)
+                rand_words, rand_feats = [], []
+                for cw, cf in zip(chunk_words, chunk_feats):
+                    rand_index = torch.randperm(int(batch_size * neg_sample_time)) % batch_size
+                    rand_words.append(cw[rand_index])
+                    rand_feats.append(cf[rand_index])
+                fake_words = torch.cat(rand_words, dim=1)
+                fake_feats = torch.cat(rand_feats, dim=1)
+                rand_step_index = torch.randperm(min_len)
+                fake_words[:, torch.arange(min_len)] = fake_words[:, rand_step_index]
+                fake_feats[:, torch.arange(min_len)] = fake_feats[:, rand_step_index]
+                words = torch.cat([words, fake_words], dim=0)
+                feats = torch.cat([feats, fake_feats], dim=0)
+                unsuper_loss = True
 
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             s_arc, s_rel = self.model(words, feats)
             loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
+                                          batch_size,
                                           self.args.mbr,
-                                          self.args.partial)
+                                          self.args.partial,
+                                          unsuper_loss)
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
             self.optimizer.step()
@@ -143,7 +165,7 @@ class CRFDependencyParser(BiaffineDependencyParser):
             # ignore all punctuation if not specified
             if not self.args.punct:
                 mask &= words.unsqueeze(-1).ne(self.puncts).all(-1)
-            metric(arc_preds, rel_preds, arcs, rels, mask)
+            metric(arc_preds[:batch_size], rel_preds[:batch_size], arcs, rels, mask[:batch_size])
             bar.set_postfix_str(f"lr: {self.scheduler.get_last_lr()[0]:.4e} - loss: {loss:.4f} - {metric}")
 
     @torch.no_grad()
@@ -156,8 +178,10 @@ class CRFDependencyParser(BiaffineDependencyParser):
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
+            batch_size, seq_len = words.shape
             s_arc, s_rel = self.model(words, feats)
             loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
+                                          batch_size,
                                           self.args.mbr,
                                           self.args.partial)
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask,

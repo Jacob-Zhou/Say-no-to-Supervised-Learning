@@ -269,7 +269,7 @@ def mst(scores, mask, multiroot=False):
     return pad(preds, total_length=seq_len).to(mask.device)
 
 
-def eisner(scores, mask):
+def eisner(scores, mask, get_scores=False):
     """
     First-order Eisner algorithm for projective decoding.
 
@@ -326,6 +326,9 @@ def eisner(scores, mask):
         s_c.diagonal(w).copy_(cr_span)
         s_c[0, w][lens.ne(w)] = float('-inf')
         p_c.diagonal(w).copy_(cr_path + starts + 1)
+
+    if get_scores:
+        return s_c[0].gather(0, lens.unsqueeze(0))[0]
 
     def backtrack(p_i, p_c, heads, i, j, complete):
         if i == j:

@@ -340,7 +340,7 @@ class CRFDependencyModel(BiaffineDependencyModel):
 
         self.crf = CRFDependency()
 
-    def loss(self, s_arc, s_rel, arcs, rels, mask, mbr=True, partial=False):
+    def loss(self, s_arc, s_rel, arcs, rels, mask, real_batch_size, mbr=True, partial=False, unsuper_loss=False):
         """
         Args:
             s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -351,7 +351,7 @@ class CRFDependencyModel(BiaffineDependencyModel):
                 Tensor of gold-standard arcs.
             rels (torch.LongTensor): [batch_size, seq_len]
                 Tensor of gold-standard labels.
-            mask (torch.BoolTensor): [batch_size, seq_len, seq_len]
+            mask (torch.BoolTensor): [batch_size, seq_len]
                 Mask for covering the unpadded tokens.
             mbr (bool):
                 If True, returns marginals for MBR decoding. Default: True.
@@ -366,11 +366,12 @@ class CRFDependencyModel(BiaffineDependencyModel):
         """
 
         batch_size, seq_len = mask.shape
-        arc_loss, arc_probs = self.crf(s_arc, mask, arcs, mbr, partial)
+        arc_loss, arc_probs = self.crf(s_arc, mask, real_batch_size, arcs, mbr, partial, unsuper_loss)
         # -1 denotes un-annotated arcs
+        mask = mask[:real_batch_size]
         if partial:
             mask = mask & arcs.ge(0)
-        s_rel, rels = s_rel[mask], rels[mask]
+        s_rel, rels = s_rel[:real_batch_size][mask], rels[mask]
         s_rel = s_rel[torch.arange(len(rels)), arcs[mask]]
         rel_loss = self.criterion(s_rel, rels)
         loss = arc_loss + rel_loss

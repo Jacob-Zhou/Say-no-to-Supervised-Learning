@@ -4,7 +4,7 @@ import torch
 import torch.autograd as autograd
 import torch.nn as nn
 from supar.utils.fn import stripe
-
+from supar.utils.alg import eisner
 
 class MatrixTree(nn.Module):
     """
@@ -97,7 +97,7 @@ class CRFDependency(nn.Module):
     """
 
     @torch.enable_grad()
-    def forward(self, scores, mask, target=None, mbr=False, partial=False):
+    def forward(self, scores, mask, real_batch_size, target=None, mbr=False, partial=False, unsuper_loss=False):
         """
         Args:
             scores (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -129,16 +129,27 @@ class CRFDependency(nn.Module):
         # marginals are used for decoding, and can be computed by combining the inside pass and autograd mechanism
         probs = scores
         if mbr:
-            probs, = autograd.grad(logZ, scores, retain_graph=training)
+            probs, = autograd.grad(logZ.sum(), scores, retain_graph=training)
 
         if target is None:
             return probs
         # the second inside process is needed if use partial annotation
         if partial:
-            score = self.inside(scores, mask, target)
+            score = self.inside(scores, mask[:real_batch_size], target)
         else:
-            score = scores.gather(-1, target.unsqueeze(-1)).squeeze(-1)[mask].sum()
-        loss = (logZ - score) / mask.sum()
+            score = scores[:real_batch_size].gather(-1, target.unsqueeze(-1)).squeeze(-1)[mask[:real_batch_size]].sum()
+
+        loss = (logZ[:real_batch_size].sum() - score) / mask[:real_batch_size].sum()
+
+        if unsuper_loss:
+            top1_scores = eisner(scores[:real_batch_size], mask[:real_batch_size], get_scores=True)
+            neg_batch_size = batch_size - real_batch_size
+            # [real_batch_size]
+            real_logZ = logZ[:real_batch_size, None]
+            # [neg_batch_size]
+            neg_logZ = logZ[None, real_batch_size:].expand(real_batch_size, neg_batch_size)
+            sample_logZ = torch.cat([real_logZ, neg_logZ], dim=-1)
+            loss += (sample_logZ.logsumexp(-1) - top1_scores).sum() / (mask[:real_batch_size].sum() + neg_batch_size * mask[real_batch_size:].sum())
 
         return loss, probs
 
@@ -148,8 +159,8 @@ class CRFDependency(nn.Module):
         batch_size, seq_len, _ = scores.shape
         # [seq_len, seq_len, batch_size]
         scores = scores.permute(2, 1, 0)
-        s_i = torch.full_like(scores, float('-inf'))
-        s_c = torch.full_like(scores, float('-inf'))
+        s_i = torch.full_like(scores, float('-inf'), dtype=torch.float64)
+        s_c = torch.full_like(scores, float('-inf'), dtype=torch.float64)
         s_c.diagonal().fill_(0)
 
         # set the scores of arcs excluded by cands to -inf
@@ -192,7 +203,7 @@ class CRFDependency(nn.Module):
             # disable multi words to modify the root
             s_c[0, w][lens.ne(w)] = float('-inf')
 
-        return s_c[0].gather(0, lens.unsqueeze(0)).sum()
+        return s_c[0].gather(0, lens.unsqueeze(0))[0]
 
 
 class CRF2oDependency(nn.Module):
