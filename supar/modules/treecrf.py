@@ -97,7 +97,7 @@ class CRFDependency(nn.Module):
     """
 
     @torch.enable_grad()
-    def forward(self, scores, mask, supervised_mask=None, real_batch_size=None, target=None, mbr=False, partial=False, unsuper_loss=False):
+    def forward(self, scores, mask, supervised_mask=None, target=None, mbr=False, partial=False, unsuper_loss=False):
         """
         Args:
             scores (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -135,27 +135,16 @@ class CRFDependency(nn.Module):
             return probs
         # the second inside process is needed if use partial annotation
         if partial:
-            score = self.inside(scores, mask[:real_batch_size], target)
+            score = self.inside(scores, mask, target)
         else:
-            score = scores[:real_batch_size][supervised_mask].gather(-1, target[supervised_mask].unsqueeze(-1)).squeeze(-1)[mask[:real_batch_size][supervised_mask]].sum()
+            score = scores[supervised_mask].gather(-1, target[supervised_mask].unsqueeze(-1)).squeeze(-1)[mask[supervised_mask]].sum()
 
         assert supervised_mask.any() or unsuper_loss
 
         if supervised_mask.any():
-            loss = (logZ[:real_batch_size][supervised_mask].sum() - score) / mask[:real_batch_size][supervised_mask].sum()
+            loss = (logZ[supervised_mask].sum() - score) / mask[supervised_mask].sum()
         else:
             loss = 0
-
-        if unsuper_loss:
-            # top1_scores = eisner(scores[:real_batch_size], mask[:real_batch_size], get_scores=True)
-            top1_scores = logZ[:real_batch_size]
-            neg_batch_size = batch_size - real_batch_size
-            # [real_batch_size]
-            real_logZ = logZ[:real_batch_size, None]
-            # [neg_batch_size]
-            neg_logZ = logZ[None, real_batch_size:].expand(real_batch_size, neg_batch_size)
-            sample_logZ = torch.cat([real_logZ, neg_logZ], dim=-1)
-            loss += (sample_logZ.logsumexp(-1) - top1_scores).sum() / (mask[:real_batch_size].sum() + neg_batch_size * mask[real_batch_size:].sum())
 
         return loss, probs
 

@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from supar.models import CRFDependencyModel
+from supar.models import VAEDependencyModel
 from supar.parsers.biaffine_dependency import BiaffineDependencyParser
 from supar.utils import Config
 from supar.utils.logging import get_logger, progress_bar
@@ -11,18 +11,13 @@ from supar.utils.metric import AttachmentMetric
 logger = get_logger(__name__)
 
 
-class CRFDependencyParser(BiaffineDependencyParser):
+class VAEDependencyParser(BiaffineDependencyParser):
     """
-    The implementation of first-order CRF Dependency Parser.
-
-    References:
-        - Yu Zhang, Zhenghua Li and Min Zhang (ACL'20)
-          Efficient Second-Order TreeCRF for Neural Dependency Parsing
-          https://www.aclweb.org/anthology/2020.acl-main.302/
+    The implementation of XXX
     """
 
-    NAME = 'crf-dependency'
-    MODEL = CRFDependencyModel
+    NAME = 'vae-dependency'
+    MODEL = VAEDependencyModel
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -121,7 +116,6 @@ class CRFDependencyParser(BiaffineDependencyParser):
         self.model.train()
 
         bar, metric = progress_bar(loader), AttachmentMetric()
-
         for supervised_mask, words, feats, arcs, rels in bar:
             unsuper_loss = self.args.semi_supervised
             if ~supervised_mask.any() and ~unsuper_loss:
@@ -130,15 +124,16 @@ class CRFDependencyParser(BiaffineDependencyParser):
             batch_size, seq_len = words.shape
 
             mask = words.ne(self.WORD.pad_index)
+            word_mask  = mask & words.lt(self.args.n_words)
             # ignore the first token of each sentence
             mask[:, 0] = 0
-            s_arc, s_rel = self.model(words, feats)
-            loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
-                                          supervised_mask=supervised_mask,
-                                          mbr=self.args.mbr,
-                                          partial=self.args.partial,
-                                          unsuper_loss=unsuper_loss)
+            s_arc, s_rel, s_word, kld_loss = self.model(words, feats, supervised_mask, arcs)
+            loss = self.model.loss(s_arc, s_rel, s_word, 
+                                          arcs, rels, words, 
+                                          kld_loss, mask, word_mask,
+                                          supervised_mask=supervised_mask)
             loss.backward()
+
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
             self.optimizer.step()
             self.scheduler.step()
@@ -164,13 +159,23 @@ class CRFDependencyParser(BiaffineDependencyParser):
             mask[:, 0] = 0
             batch_size, seq_len = words.shape
             s_arc, s_rel = self.model(words, feats)
-            
-            loss, s_arc = self.model.loss(s_arc, s_rel, arcs, rels, mask,
-                                          mbr=self.args.mbr,
-                                          partial=self.args.partial)
+            # s_arc, s_rel, s_word, kld_loss = self.model(words, feats, mask.new_ones(batch_size), arcs)
+
+            loss = torch.zeros(1)
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask,
                                                      self.args.tree,
                                                      self.args.proj)
+            # arc_preds[~mask] = 0
+            # for i in range(20):
+            #     # print(tree[i])
+            #     print()
+            #     print(self.WORD.vocab[words[i][1:]])
+            #     print(self.WORD.vocab[s_word.argmax(-1)[i]])
+            #     print()
+            #     print(arcs[i])
+            #     print(arc_preds[i])
+            #     print('-------------------')
+            # exit()
             if self.args.partial:
                 mask &= arcs.ge(0)
             # ignore all punctuation if not specified
@@ -193,6 +198,7 @@ class CRFDependencyParser(BiaffineDependencyParser):
             # ignore the first token of each sentence
             mask[:, 0] = 0
             lens = mask.sum(1).tolist()
+            batch_size = words.shape[0]
             s_arc, s_rel = self.model(words, feats)
             if self.args.mbr:
                 s_arc = self.model.crf(s_arc, mask, mbr=True)

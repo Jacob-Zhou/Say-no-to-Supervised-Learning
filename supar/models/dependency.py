@@ -7,8 +7,11 @@ from supar.modules import (MLP, BertEmbedding, Biaffine, BiLSTM, CharLSTM,
 from supar.modules.dropout import IndependentDropout, SharedDropout
 from supar.modules.treecrf import CRF2oDependency, CRFDependency, MatrixTree
 from supar.utils import Config
-from supar.utils.alg import eisner, eisner2o, mst
+from supar.utils.alg import differentiable_eisner, eisner, eisner2o, mst, crf
 from supar.utils.transform import CoNLL
+from torch.distributions.normal import Normal
+from torch.distributions.uniform import Uniform
+from torch.nn.functional import one_hot, log_softmax
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
@@ -325,6 +328,238 @@ class CRFNPDependencyModel(BiaffineDependencyModel):
         return loss, arc_probs
 
 
+class VAEDependencyModel(BiaffineDependencyModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        n_embed       = kwargs['n_embed']
+        n_feat_embed  = kwargs['n_feat_embed']
+        n_lstm_hidden = kwargs['n_lstm_hidden']
+        n_lstm_layers = kwargs['n_lstm_layers']
+        n_mlp_dec     = kwargs['n_mlp_dec']
+        n_words       = kwargs['n_words']
+
+        # self.dec_lstm = nn.LSTM(
+        #     input_size=n_embed+n_feat_embed,
+        #     hidden_size=n_lstm_hidden,
+        #     num_layers=n_lstm_layers,
+        #     bidirectional=False,
+        # )
+
+        n_dec_lstm_hidden = 200
+        n_dec_lstm_layers = 1
+        self.n_dec_lstm_layers = n_dec_lstm_layers
+
+        self.dec_lstm = nn.LSTM(
+            input_size=n_embed+n_feat_embed,
+            hidden_size=n_dec_lstm_hidden,
+            num_layers=n_dec_lstm_layers,
+            bidirectional=False,
+        )   # .5
+
+        # self.fc_mu = nn.Linear(n_lstm_hidden*2, n_lstm_hidden)
+        # self.fc_var = nn.Linear(n_lstm_hidden*2, n_lstm_hidden)
+
+        self.fc_mu = nn.Linear(n_lstm_layers*n_lstm_hidden*2, n_dec_lstm_hidden*n_dec_lstm_layers)
+        self.fc_var = nn.Linear(n_lstm_layers*n_lstm_hidden*2, n_dec_lstm_hidden*n_dec_lstm_layers)
+
+        self.mlp_gnn = MLP(n_dec_lstm_hidden, n_mlp_dec*3)
+
+        self.mlp_dec = MLP(n_mlp_dec, n_embed)
+
+        self.generator = nn.Linear(n_embed, n_words, bias=False)
+        # self.generator.weight = self.word_embed.weight
+
+        self.crf = CRFDependency()
+
+        self.nll_criterion = nn.NLLLoss()
+
+    def forward(self, words, feats, supervised_mask=None, arcs=None):
+        """
+        Args:
+            words (torch.LongTensor) [batch_size, seq_len]:
+                The word indices.
+            feats (torch.LongTensor):
+                The feat indices.
+                If feat is 'char' or 'bert', the size of feats should be [batch_size, seq_len, fix_len]
+                If 'tag', then the size is [batch_size, seq_len].
+
+        Returns:
+            s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
+                The scores of all possible arcs.
+            s_rel (torch.Tensor): [batch_size, seq_len, seq_len, n_labels]
+                The scores of all possible labels on each arc.
+        """
+
+        batch_size, seq_len = words.shape
+        # get the mask and lengths of given batch
+        mask = words.ne(self.pad_index)
+        ext_words = words
+        # set the indices larger than num_embeddings to unk_index
+        if hasattr(self, 'pretrained'):
+            ext_mask = words.ge(self.word_embed.num_embeddings)
+            ext_words = words.masked_fill(ext_mask, self.unk_index)
+
+        # get outputs from embedding layers
+        word_embed = self.word_embed(ext_words)
+        if hasattr(self, 'pretrained'):
+            word_embed += self.pretrained(words)
+        feat_embed = self.feat_embed(feats)
+        word_embed, feat_embed = self.embed_dropout(word_embed, feat_embed)
+        # concatenate the word and feat representations
+        embed = torch.cat((word_embed, feat_embed), -1)
+
+        x = pack_padded_sequence(embed, mask.sum(1), True, False)
+        x, (h, _) = self.lstm(x)
+        x, _ = pad_packed_sequence(x, True, total_length=seq_len)
+        x = self.lstm_dropout(x)
+
+        # apply MLPs to the BiLSTM output states
+        arc_d = self.mlp_arc_d(x)
+        arc_h = self.mlp_arc_h(x)
+        rel_d = self.mlp_rel_d(x)
+        rel_h = self.mlp_rel_h(x)
+
+        # [batch_size, seq_len, seq_len]
+        s_arc = self.arc_attn(arc_d, arc_h)
+        # [batch_size, seq_len, seq_len, n_rels]
+        s_rel = self.rel_attn(rel_d, rel_h).permute(0, 2, 3, 1)
+        # set the scores that exceed the length of each sentence to -inf
+        # s_arc.masked_fill_(~mask.unsqueeze(1), float('-inf'))
+
+        if not self.training:
+            return s_arc, s_rel
+
+        # h: [num_layers * 2, batch_size, hidden_size]
+        num_layers_2, batch_size, hidden_size = h.shape
+        # num_layers = num_layers_2 // 2
+        # h = h.view(num_layers, 2, batch_size, hidden_size)
+        # h = h.permute(0, 2, 3, 1).contiguous().view(num_layers, batch_size, -1)
+
+        h = h.permute(1, 0, 2).contiguous().view(batch_size, -1)
+
+        # [num_layers, batch_size, hidden_size*2]
+        mu = self.fc_mu(h).view(batch_size, self.n_dec_lstm_layers, -1).permute(1, 0, 2)
+        log_var = self.fc_var(h).view(batch_size, self.n_dec_lstm_layers, -1).permute(1, 0, 2)
+
+        if self.training:
+            std = torch.exp(0.5 * log_var)
+
+            # Reparameterization trick for z
+            norm_dist = Normal(mu, std)
+            z = norm_dist.rsample()
+        else:
+            z = mu
+
+        tree = torch.zeros_like(s_arc)
+
+        if supervised_mask is None or arcs is None:
+            supervised_mask = mask.new_zeros([batch_size])
+
+        if supervised_mask.any():
+            # [supervised_batch_size, seq_len]
+            gold_tree = arcs[supervised_mask]
+            # [supervised_batch_size, seq_len, seq_len]
+            gold_tree = one_hot(gold_tree, num_classes=seq_len)
+            tree[supervised_mask] = gold_tree.float()
+
+        if not supervised_mask.all():
+            # Gumbel-Max trick for T
+            # [unsupervised_batch_size, seq_len, seq_len]
+            s_unsuper_arc = s_arc[~supervised_mask]
+            if self.training:
+                uni_dist = Uniform(0, 1)
+                noise = uni_dist.sample(s_unsuper_arc.shape)
+                noise = -(-noise.log()).log().to(s_unsuper_arc)
+                s_tree = s_unsuper_arc + noise
+            else:
+                s_tree = s_unsuper_arc
+            # sample_tree = differentiable_eisner(s_tree, mask[~supervised_mask])
+            sample_tree = crf(s_tree, mask[~supervised_mask])
+            tree[~supervised_mask] = sample_tree
+
+        # Decoder LSTM
+        x = pack_padded_sequence(embed, mask.sum(1)-1, True, False)
+        x, _= self.dec_lstm(x, (z, torch.zeros_like(z)))
+        x, _ = pad_packed_sequence(x, True, total_length=seq_len-1)
+        x = self.lstm_dropout(x)
+
+        # shift left predict
+        # [batch_size, seq_len-1]
+        mask = mask[:, 1:]
+        mask2d = mask[..., None] & mask[:, None, :]
+        mask2d[:, 0] = 0
+        # [batch_size, seq_len-1, seq_len-1]
+        # tree = tree[:, :-1, :-1] # .4
+        tree = tree[:, 1:, 1:]     # .3
+        tree.masked_fill_(~mask2d, 0.)
+
+        # print()
+        # torch.set_printoptions(threshold=10000000000000000)
+
+        # [batch_size, seq_len-1, n_mlp_dec]
+        r_ring, r_head, r_dep = self.mlp_gnn(x).chunk(3, dim=-1)
+        # r_head = torch.einsum("bxd,bxy->byd", r_head, tree.triu(1))
+        # r_dep  = torch.einsum("bxd,byx->byd", r_dep, tree.tril(-1))
+        # r_dec  = torch.relu(r_ring + r_head + r_dep) # TODO why using tanh?
+        r_head = torch.einsum("bxd,bxy->byd", r_head, tree.triu(1)) / (tree.triu(1).sum(1)[..., None] + 1e-6)
+        r_dep  = torch.einsum("bxd,byx->byd", r_dep, tree.tril(-1)) / (tree.tril(-1).sum(2)[..., None] + 1e-6)
+        # assert not torch.isnan(r_head).any()
+        # assert not torch.isnan(r_dep).any()
+        r_dec  = r_ring + r_head + r_dep # TODO why using tanh?
+        # r_dec = r_ring
+        r_dec  = self.mlp_dec(r_dec)
+        # print(r_dec[~supervised_mask][0])
+        # print(r_dec[supervised_mask][0])
+        s_word = self.generator(r_dec)
+
+        # [num_layers, batch_size, hidden_size*2]
+        log_var  = log_var.permute(1, 0, 2).contiguous().view(batch_size, -1)
+        mu       = mu.permute(1, 0, 2).contiguous().view(batch_size, -1)
+        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=1), dim=0)
+        return s_arc, s_rel, s_word, kld_loss
+
+    def loss(self, s_arc, s_rel, s_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
+        """
+        Args:
+            s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
+                The scores of all possible arcs.
+            s_rel (torch.Tensor): [batch_size, seq_len, seq_len, n_labels]
+                The scores of all possible labels on each arc.
+            arcs (torch.LongTensor): [batch_size, seq_len]
+                Tensor of gold-standard arcs.
+            rels (torch.LongTensor): [batch_size, seq_len]
+                Tensor of gold-standard labels.
+            mask (torch.BoolTensor): [batch_size, seq_len]
+                Mask for covering the unpadded tokens.
+
+        Returns:
+            loss (torch.Tensor): scalar
+                The training loss.
+        """
+        batch_size, _ = mask.shape
+        if supervised_mask is None:
+            supervised_mask = mask.new_ones(batch_size)
+
+        supervised_mask = mask & supervised_mask[:, None]
+
+        # supervised loss
+        s_arc, arcs = s_arc[supervised_mask], arcs[supervised_mask]
+        s_rel, rels = s_rel[supervised_mask], rels[supervised_mask]
+        s_rel = s_rel[torch.arange(len(arcs)), arcs]
+        arc_loss = self.criterion(s_arc, arcs)
+        rel_loss = self.criterion(s_rel, rels)
+
+        # reconstruction loss (no matter supervised learning or unsupervised learning)
+        s_word, words = s_word[word_mask[:, 1:]], words[:, 1:][word_mask[:, 1:]]
+
+        recons_loss = self.nll_criterion(s_word.log_softmax(-1), words)
+
+        return arc_loss + rel_loss + self.args.recons_weight * recons_loss + self.args.kld_weight * kld_loss
+        # return arc_loss + rel_loss + self.args.recons_weight * recons_loss
+        # return arc_loss + rel_loss
+        # return recons_loss
+
+
 class CRFDependencyModel(BiaffineDependencyModel):
     """
     The implementation of first-order CRF Dependency Parser.
@@ -340,7 +575,7 @@ class CRFDependencyModel(BiaffineDependencyModel):
 
         self.crf = CRFDependency()
 
-    def loss(self, s_arc, s_rel, arcs, rels, mask, supervised_mask=None, real_batch_size=None, mbr=True, partial=False, unsuper_loss=False):
+    def loss(self, s_arc, s_rel, arcs, rels, mask, supervised_mask=None, mbr=True, partial=False, unsuper_loss=False):
         """
         Args:
             s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -368,17 +603,14 @@ class CRFDependencyModel(BiaffineDependencyModel):
         batch_size, seq_len = mask.shape
         if supervised_mask is None:
             supervised_mask = mask.new_ones(batch_size)
-        if real_batch_size is None:
-            real_batch_size = batch_size
-        arc_loss, arc_probs = self.crf(s_arc, mask, supervised_mask, real_batch_size, arcs, mbr, partial, unsuper_loss)
+        arc_loss, arc_probs = self.crf(s_arc, mask, supervised_mask, arcs, mbr, partial, unsuper_loss)
         # -1 denotes un-annotated arcs
-        mask = mask[:real_batch_size]
         if partial:
             mask = mask & arcs.ge(0)
         if not supervised_mask.all():
             mask = mask & supervised_mask.unsqueeze(-1)
         if mask.any():
-            s_rel, rels = s_rel[:real_batch_size][mask], rels[mask]
+            s_rel, rels = s_rel[mask], rels[mask]
             s_rel = s_rel[torch.arange(len(rels)), arcs[mask]]
             rel_loss = self.criterion(s_rel, rels)
         else:

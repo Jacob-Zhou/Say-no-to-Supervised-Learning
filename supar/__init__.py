@@ -2,12 +2,14 @@
 
 from .parsers import (BiaffineDependencyParser, CRF2oDependencyParser,
                       CRFConstituencyParser, CRFDependencyParser,
-                      CRFNPDependencyParser, Parser)
+                      VAEDependencyParser, CRFNPDependencyParser,
+                      Parser)
 
 __all__ = ['Parser',
            'BiaffineDependencyParser',
            'CRFNPDependencyParser',
            'CRFDependencyParser',
+           'VAEDependencyParser',
            'CRF2oDependencyParser',
            'CRFConstituencyParser']
 __version__ = '0.0.1'
@@ -15,6 +17,7 @@ __version__ = '0.0.1'
 PARSER = {parser.NAME: parser for parser in [BiaffineDependencyParser,
                                              CRFNPDependencyParser,
                                              CRFDependencyParser,
+                                             VAEDependencyParser,
                                              CRF2oDependencyParser,
                                              CRFConstituencyParser]}
 

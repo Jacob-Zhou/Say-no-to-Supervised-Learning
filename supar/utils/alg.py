@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
 import torch
+import torch.autograd as autograd
 from supar.utils.fn import pad, stripe
+from torch.nn.functional import softmax
 
 
 def kmeans(x, k, max_it=32):
@@ -354,6 +356,119 @@ def eisner(scores, mask, get_scores=False):
     return pad(preds, total_length=seq_len).to(mask.device)
 
 
+def differentiable_eisner(scores, mask, t=1):
+    lens = mask.sum(1)
+    batch_size, seq_len, _ = scores.shape
+    scores = scores.permute(2, 1, 0)
+    s_i = torch.full_like(scores, float('-inf'))
+    s_c = torch.full_like(scores, float('-inf'))
+    p_i = scores.new_zeros(seq_len, seq_len, seq_len, batch_size)
+    p_c = scores.new_zeros(seq_len, seq_len, seq_len, batch_size)
+    s_c.diagonal().fill_(0)
+    min_score = scores.min().detach() - torch.finfo(torch.float).eps
+
+    for w in range(1, seq_len):
+        n = seq_len - w
+        # ilr = C(i->r) + C(j->r+1)
+        ilr = stripe(s_c, n, w) + stripe(s_c, n, w, (w, 1))
+        # [batch_size, n, w]
+        ilr = ilr.permute(2, 0, 1)
+        il = ilr + scores.diagonal(-w).unsqueeze(-1)
+        # I(j->i) = softmax(C(i->r) + C(j->r+1) + s(j->i)), i <= r < j
+        il_path =  softmax(t*il, -1)
+        il_span = torch.einsum('bnw,bnw->bn', il_path, il)
+        s_i.diagonal(-w).copy_(il_span)
+        p_i_slice = scores.new_zeros(seq_len, n, batch_size)
+        stripe(p_i_slice, n, w, dim=0).permute(2, 0, 1).copy_(il_path)
+        p_i.diagonal(-w).copy_(p_i_slice.permute(0, 2, 1))
+        ir = ilr + scores.diagonal(w).unsqueeze(-1)
+        # I(i->j) = max(C(i->r) + C(j->r+1) + s(i->j)), i <= r < j
+        ir_path = softmax(t*ir, -1)
+        ir_span = torch.einsum('bnw,bnw->bn', ir_path, ir)
+        s_i.diagonal(w).copy_(ir_span)
+        p_i_slice = scores.new_zeros(seq_len, n, batch_size)
+        stripe(p_i_slice, n, w, dim=0).permute(2, 0, 1).copy_(ir_path)
+        p_i.diagonal(w).copy_(p_i_slice.permute(0, 2, 1))
+
+        # C(j->i) = max(C(r->i) + I(j->r)), i <= r < j
+        cl = stripe(s_c, n, w, (0, 0), 0) + stripe(s_i, n, w, (w, 0))
+        cl_path = softmax(t*cl.permute(2, 0, 1), -1)
+        cl_span = torch.einsum('bnw,bnw->bn', cl_path, cl.permute(2, 0, 1))
+        s_c.diagonal(-w).copy_(cl_span)
+        p_c_slice = scores.new_zeros(seq_len, n, batch_size)
+        stripe(p_c_slice, n, w, dim=0).permute(2, 0, 1).copy_(cl_path)
+        p_c.diagonal(-w).copy_(p_c_slice.permute(0, 2, 1))
+        # C(i->j) = max(I(i->r) + C(r->j)), i < r <= j
+        cr = stripe(s_i, n, w, (0, 1)) + stripe(s_c, n, w, (1, w), 0)
+        cr_path = softmax(t*cr.permute(2, 0, 1), -1)
+        cr_span = torch.einsum('bnw,bnw->bn', cr_path, cr.permute(2, 0, 1))
+        s_c.diagonal(w).copy_(cr_span)
+        s_c[0, w][lens.ne(w)] = min_score
+        p_c_slice = scores.new_zeros(seq_len, n, batch_size)
+        stripe(p_c_slice, n, w, offset=(1, 0), dim=0).permute(2, 0, 1).copy_(cr_path)
+        p_c.diagonal(w).copy_(p_c_slice.permute(0, 2, 1))
+
+    p_c = p_c.permute(3, 0, 1, 2)
+    p_i = p_i.permute(3, 0, 1, 2)
+
+    return differentiable_backtrack_batchify(p_i, p_c, lens)
+
+
+def differentiable_backtrack_batchify(p_i, p_c, lens):
+    lens -= 1
+    batch_size, seq_len, *_ = p_i.shape
+    old_t_i = p_i.new_zeros(batch_size, seq_len, seq_len)
+    old_t_c = p_c.new_zeros(batch_size, seq_len, seq_len)
+    seq_range = torch.arange(seq_len,    device=p_i.device)
+    seq_batch = torch.arange(batch_size, device=p_i.device)
+    old_t_c[seq_batch, 0, lens] = 1.
+    for l in range(seq_len - 1, 0, -1):
+        for i in range(0, seq_len - l):
+            j = i + l
+            t_i = old_t_i.clone()
+            t_c = old_t_c.clone()
+            batch_mask = (lens >= j)
+            batch_idx = seq_batch[batch_mask]
+
+            mask_i = ((seq_range > i) & (seq_range <= j))
+            k_idx = seq_range[mask_i]
+            tmp = old_t_c[batch_idx, i, j].unsqueeze(-1) * p_c[batch_idx, i, j]
+            tmp = tmp[..., k_idx]
+            repeated_batch_idx = batch_idx.unsqueeze(-1).repeat(1, len(k_idx)).view(-1)
+            repeated_k_idx = k_idx.repeat(len(batch_idx))
+            t_i[repeated_batch_idx, i, repeated_k_idx] = old_t_i[repeated_batch_idx, i, repeated_k_idx] + tmp.view(-1)
+            t_c[repeated_batch_idx, repeated_k_idx, j] = old_t_c[repeated_batch_idx, repeated_k_idx, j] + tmp.view(-1)
+
+            mask_j = ((seq_range >= i) & (seq_range < j))
+            k_idx = seq_range[mask_j]
+            tmp = old_t_c[batch_idx, j, i].unsqueeze(-1) * p_c[batch_idx, j, i]
+            tmp = tmp[..., k_idx]
+            repeated_batch_idx = batch_idx.unsqueeze(-1).repeat(1, len(k_idx)).view(-1)
+            repeated_k_idx = k_idx.repeat(len(batch_idx))
+            t_c[repeated_batch_idx, repeated_k_idx, i] = old_t_c[repeated_batch_idx, repeated_k_idx, i] + tmp.view(-1)
+            t_i[repeated_batch_idx, j, repeated_k_idx] = old_t_i[repeated_batch_idx, j, repeated_k_idx] + tmp.view(-1)
+
+            mask_j = ((seq_range >= i) & (seq_range <= j))
+            k_idx = seq_range[mask_j]
+            tmp = t_i[batch_idx].unsqueeze(-1) * p_i[batch_idx]
+            # it work when remove mask_j why? but grad is borken, why?
+            k_size = len(k_idx) - 1
+            repeated_batch_idx = batch_idx.unsqueeze(-1).repeat(1, k_size).view(-1)
+            sub_batch_size = len(batch_idx)
+            repeated_k_idx    = k_idx[:-1].repeat(sub_batch_size)
+            repeated_k_idx_rs = k_idx[1:].repeat(sub_batch_size)
+            tmp_ij = tmp[:, i, j, k_idx[:-1]].contiguous().view(-1)
+            tmp_ji = tmp[:, j, i, k_idx[:-1]].contiguous().view(-1)
+            t_c[repeated_batch_idx, i, repeated_k_idx]    += tmp_ij
+            t_c[repeated_batch_idx, j, repeated_k_idx_rs] += tmp_ij
+            t_c[repeated_batch_idx, i, repeated_k_idx]    += tmp_ji
+            t_c[repeated_batch_idx, j, repeated_k_idx_rs] += tmp_ji
+
+            old_t_i, old_t_c = t_i, t_c
+
+    return old_t_i
+
+
 def eisner2o(scores, mask):
     """
     Second-order Eisner algorithm for projective decoding.
@@ -538,3 +653,63 @@ def cky(scores, mask):
              for i, length in enumerate(lens.tolist())]
 
     return trees
+
+
+@torch.enable_grad()
+def crf(scores, mask):
+    lens = mask.sum(1) - 1
+    training = scores.requires_grad
+    # always enable the gradient computation of scores
+    # in order for the computation of marginal probs
+    _, s_c = inside(scores.requires_grad_(), mask)
+    logZ = s_c[0].gather(0, lens.unsqueeze(0)).sum()
+    # marginal probs are used for decoding, and can be computed by
+    # combining the inside algorithm and autograd mechanism
+    # instead of the entire inside-outside process
+    probs, = autograd.grad(logZ, scores, retain_graph=training, create_graph=True)
+
+    return probs
+
+
+def inside(scores, mask):
+    # the end position of each sentence in a batch
+    lens = mask.sum(1) - 1
+    batch_size, seq_len, _ = scores.shape
+    # [seq_len, seq_len, batch_size]
+    scores = scores.permute(2, 1, 0)
+    s_i = torch.full_like(scores, float('-inf'))
+    s_c = torch.full_like(scores, float('-inf'))
+    s_c.diagonal().fill_(0)
+
+    for w in range(1, seq_len):
+        # n denotes the number of spans to iterate,
+        # from span (0, w) to span (n, n+w) given width w
+        n = seq_len - w
+
+        # ilr = C(i->r) + C(j->r+1)
+        # [n, w, batch_size]
+        ilr = stripe(s_c, n, w) + stripe(s_c, n, w, (w, 1))
+        if ilr.requires_grad:
+            ilr.register_hook(lambda x: x.masked_fill_(torch.isnan(x), 0))
+        il = ir = ilr.permute(2, 0, 1).logsumexp(-1)
+        # I(j->i) = logsumexp(C(i->r) + C(j->r+1)) + s(j->i), i <= r < j
+        # fill the w-th diagonal of the lower triangular part of s_i
+        # with I(j->i) of n spans
+        s_i.diagonal(-w).copy_(il + scores.diagonal(-w))
+        # I(i->j) = logsumexp(C(i->r) + C(j->r+1)) + s(i->j), i <= r < j
+        # fill the w-th diagonal of the upper triangular part of s_i
+        # with I(i->j) of n spans
+        s_i.diagonal(w).copy_(ir + scores.diagonal(w))
+
+        # C(j->i) = logsumexp(C(r->i) + I(j->r)), i <= r < j
+        cl = stripe(s_c, n, w, (0, 0), 0) + stripe(s_i, n, w, (w, 0))
+        cl.register_hook(lambda x: x.masked_fill_(torch.isnan(x), 0))
+        s_c.diagonal(-w).copy_(cl.permute(2, 0, 1).logsumexp(-1))
+        # C(i->j) = logsumexp(I(i->r) + C(r->j)), i < r <= j
+        cr = stripe(s_i, n, w, (0, 1)) + stripe(s_c, n, w, (1, w), 0)
+        cr.register_hook(lambda x: x.masked_fill_(torch.isnan(x), 0))
+        s_c.diagonal(w).copy_(cr.permute(2, 0, 1).logsumexp(-1))
+        # disable multi words to modify the root
+        s_c[0, w][lens.ne(w)] = float('-inf')
+
+    return s_i, s_c
