@@ -332,46 +332,24 @@ class VAEDependencyModel(BiaffineDependencyModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         n_embed       = kwargs['n_embed']
-        n_feat_embed  = kwargs['n_feat_embed']
         n_lstm_hidden = kwargs['n_lstm_hidden']
-        n_lstm_layers = kwargs['n_lstm_layers']
         n_mlp_dec     = kwargs['n_mlp_dec']
         n_words       = kwargs['n_words']
 
-        # self.dec_lstm = nn.LSTM(
-        #     input_size=n_embed+n_feat_embed,
-        #     hidden_size=n_lstm_hidden,
-        #     num_layers=n_lstm_layers,
-        #     bidirectional=False,
-        # )
+        self.fc_mu = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
+        self.fc_var = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
 
-        n_dec_lstm_hidden = 200
-        n_dec_lstm_layers = 1
-        self.n_dec_lstm_layers = n_dec_lstm_layers
+        # self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec*2)
+        self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec)
 
-        self.dec_lstm = nn.LSTM(
-            input_size=n_embed+n_feat_embed,
-            hidden_size=n_dec_lstm_hidden,
-            num_layers=n_dec_lstm_layers,
-            bidirectional=False,
-        )   # .5
-
-        # self.fc_mu = nn.Linear(n_lstm_hidden*2, n_lstm_hidden)
-        # self.fc_var = nn.Linear(n_lstm_hidden*2, n_lstm_hidden)
-
-        self.fc_mu = nn.Linear(n_lstm_layers*n_lstm_hidden*2, n_dec_lstm_hidden*n_dec_lstm_layers)
-        self.fc_var = nn.Linear(n_lstm_layers*n_lstm_hidden*2, n_dec_lstm_hidden*n_dec_lstm_layers)
-
-        self.mlp_gnn = MLP(n_dec_lstm_hidden, n_mlp_dec*3)
-
-        self.mlp_dec = MLP(n_mlp_dec, n_embed)
+        self.mlp_dec = MLP(n_mlp_dec, n_embed, activation=nn.Identity())
 
         self.generator = nn.Linear(n_embed, n_words, bias=False)
         # self.generator.weight = self.word_embed.weight
 
-        self.crf = CRFDependency()
+        # self.crf = CRFDependency()
 
-        self.nll_criterion = nn.NLLLoss()
+        # self.nll_criterion = nn.NLLLoss()
 
     def forward(self, words, feats, supervised_mask=None, arcs=None):
         """
@@ -409,7 +387,7 @@ class VAEDependencyModel(BiaffineDependencyModel):
         embed = torch.cat((word_embed, feat_embed), -1)
 
         x = pack_padded_sequence(embed, mask.sum(1), True, False)
-        x, (h, _) = self.lstm(x)
+        x, _ = self.lstm(x)
         x, _ = pad_packed_sequence(x, True, total_length=seq_len)
         x = self.lstm_dropout(x)
 
@@ -423,37 +401,34 @@ class VAEDependencyModel(BiaffineDependencyModel):
         s_arc = self.arc_attn(arc_d, arc_h)
         # [batch_size, seq_len, seq_len, n_rels]
         s_rel = self.rel_attn(rel_d, rel_h).permute(0, 2, 3, 1)
-        # set the scores that exceed the length of each sentence to -inf
-        # s_arc.masked_fill_(~mask.unsqueeze(1), float('-inf'))
+
 
         if not self.training:
+            # set the scores that exceed the length of each sentence to -inf
+            s_arc.masked_fill_(~mask.unsqueeze(1), float('-inf'))
             return s_arc, s_rel
 
-        # h: [num_layers * 2, batch_size, hidden_size]
-        num_layers_2, batch_size, hidden_size = h.shape
-        # num_layers = num_layers_2 // 2
-        # h = h.view(num_layers, 2, batch_size, hidden_size)
-        # h = h.permute(0, 2, 3, 1).contiguous().view(num_layers, batch_size, -1)
+        # [batch_size, seq_len, hidden_size*2]
+        mu = self.fc_mu(x)
+        log_var = self.fc_var(x)
 
-        h = h.permute(1, 0, 2).contiguous().view(batch_size, -1)
+        std = torch.exp(0.5 * log_var)
 
-        # [num_layers, batch_size, hidden_size*2]
-        mu = self.fc_mu(h).view(batch_size, self.n_dec_lstm_layers, -1).permute(1, 0, 2)
-        log_var = self.fc_var(h).view(batch_size, self.n_dec_lstm_layers, -1).permute(1, 0, 2)
-
-        if self.training:
-            std = torch.exp(0.5 * log_var)
-
-            # Reparameterization trick for z
-            norm_dist = Normal(mu, std)
-            z = norm_dist.rsample()
-        else:
-            z = mu
+        # Reparameterization trick for z
+        eps = torch.randn_like(std)
+        z = eps * std + mu
 
         tree = torch.zeros_like(s_arc)
 
+        # shift left predict
+        # [batch_size, seq_len]
+        mask2d = mask.view(batch_size, 1, seq_len).repeat(1, seq_len, 1)
+        mask2d.diagonal(dim1=-2, dim2=-1)[:] = 0
+
         if supervised_mask is None or arcs is None:
             supervised_mask = mask.new_zeros([batch_size])
+
+        ent = None
 
         if supervised_mask.any():
             # [supervised_batch_size, seq_len]
@@ -463,62 +438,27 @@ class VAEDependencyModel(BiaffineDependencyModel):
             tree[supervised_mask] = gold_tree.float()
 
         if not supervised_mask.all():
-            # Gumbel-Max trick for T
             # [unsupervised_batch_size, seq_len, seq_len]
             s_unsuper_arc = s_arc[~supervised_mask]
-            if self.training:
-                uni_dist = Uniform(0, 1)
-                noise = uni_dist.sample(s_unsuper_arc.shape)
-                noise = -(-noise.log()).log().to(s_unsuper_arc)
-                s_tree = s_unsuper_arc + noise
-            else:
-                s_tree = s_unsuper_arc
-            # sample_tree = differentiable_eisner(s_tree, mask[~supervised_mask])
+            s_tree = s_unsuper_arc
             sample_tree = crf(s_tree, mask[~supervised_mask])
-            tree[~supervised_mask] = sample_tree
+            s_sample_tree = torch.masked_fill(s_tree, ~mask2d[~supervised_mask], float('-inf'))
+            sample_tree = s_sample_tree.softmax(-1)
+            ent = sample_tree * s_sample_tree.log_softmax(-1).masked_fill(~mask2d[~supervised_mask], 0)
+            tree[~supervised_mask] = sample_tree.float()
 
-        # Decoder LSTM
-        x = pack_padded_sequence(embed, mask.sum(1)-1, True, False)
-        x, _= self.dec_lstm(x, (z, torch.zeros_like(z)))
-        x, _ = pad_packed_sequence(x, True, total_length=seq_len-1)
-        x = self.lstm_dropout(x)
-
-        # shift left predict
-        # [batch_size, seq_len-1]
-        mask = mask[:, 1:]
-        mask2d = mask[..., None] & mask[:, None, :]
-        mask2d[:, 0] = 0
-        # [batch_size, seq_len-1, seq_len-1]
-        # tree = tree[:, :-1, :-1] # .4
-        tree = tree[:, 1:, 1:]     # .3
-        tree.masked_fill_(~mask2d, 0.)
-
-        # print()
-        # torch.set_printoptions(threshold=10000000000000000)
-
-        # [batch_size, seq_len-1, n_mlp_dec]
-        r_ring, r_head, r_dep = self.mlp_gnn(x).chunk(3, dim=-1)
-        # r_head = torch.einsum("bxd,bxy->byd", r_head, tree.triu(1))
-        # r_dep  = torch.einsum("bxd,byx->byd", r_dep, tree.tril(-1))
-        # r_dec  = torch.relu(r_ring + r_head + r_dep) # TODO why using tanh?
-        r_head = torch.einsum("bxd,bxy->byd", r_head, tree.triu(1)) / (tree.triu(1).sum(1)[..., None] + 1e-6)
-        r_dep  = torch.einsum("bxd,byx->byd", r_dep, tree.tril(-1)) / (tree.tril(-1).sum(2)[..., None] + 1e-6)
-        # assert not torch.isnan(r_head).any()
-        # assert not torch.isnan(r_dep).any()
-        r_dec  = r_ring + r_head + r_dep # TODO why using tanh?
-        # r_dec = r_ring
+        r_dec = self.mlp_gnn(z)
         r_dec  = self.mlp_dec(r_dec)
-        # print(r_dec[~supervised_mask][0])
-        # print(r_dec[supervised_mask][0])
         s_word = self.generator(r_dec)
+        weighted_p_word  = torch.einsum("bxd,byx->byd", s_word.log_softmax(-1), tree)
 
-        # [num_layers, batch_size, hidden_size*2]
-        log_var  = log_var.permute(1, 0, 2).contiguous().view(batch_size, -1)
-        mu       = mu.permute(1, 0, 2).contiguous().view(batch_size, -1)
-        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=1), dim=0)
-        return s_arc, s_rel, s_word, kld_loss
+        # [batch_size, seq_len, hidden_size*2]
+        z_kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=-1))
+        # kld_loss -= ent.sum(-1).mean() if ent is not None else 0.
+        y_kld_loss = -ent.sum(-1).mean() if ent is not None else 0.
+        return s_arc, s_rel, weighted_p_word, (z_kld_loss, y_kld_loss)
 
-    def loss(self, s_arc, s_rel, s_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
+    def loss(self, s_arc, s_rel, weighted_p_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
         """
         Args:
             s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -550,15 +490,14 @@ class VAEDependencyModel(BiaffineDependencyModel):
         rel_loss = self.criterion(s_rel, rels)
 
         # reconstruction loss (no matter supervised learning or unsupervised learning)
-        s_word, words = s_word[word_mask[:, 1:]], words[:, 1:][word_mask[:, 1:]]
+        weighted_p_word, words = weighted_p_word[word_mask], words[word_mask]
+        recons_loss = -weighted_p_word.gather(-1, words[:, None]).mean()
+        z_kld_loss, y_kld_loss = kld_loss
 
-        recons_loss = self.nll_criterion(s_word.log_softmax(-1), words)
-
-        return arc_loss + rel_loss + self.args.recons_weight * recons_loss + self.args.kld_weight * kld_loss
-        # return arc_loss + rel_loss + self.args.recons_weight * recons_loss
-        # return arc_loss + rel_loss
-        # return recons_loss
-
+        return self.args.tree_weight * (arc_loss + rel_loss) + \
+            self.args.recons_weight * recons_loss + \
+            self.args.z_kld_weight * z_kld_loss + \
+            self.args.y_kld_weight * y_kld_loss
 
 class CRFDependencyModel(BiaffineDependencyModel):
     """
@@ -801,3 +740,26 @@ class CRF2oDependencyModel(BiaffineDependencyModel):
         rel_preds = s_rel.argmax(-1).gather(-1, arc_preds.unsqueeze(-1)).squeeze(-1)
 
         return arc_preds, rel_preds
+
+
+def heatmap(corr, name='matrix'):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    sns.set(style="white")
+
+    # Set up the matplotlib figure
+    f, ax = plt.subplots(figsize=(4, 4))
+
+    # Generate a custom diverging colormap
+    # cmap = sns.diverging_palette(220, 10, as_cmap=True)
+
+    cmap = "RdBu"
+
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(corr.detach().cpu(), cmap=cmap, center=0, ax=ax,
+                vmin=-1.1, vmax=1.1, square=True, linewidths=.5,
+                xticklabels=False, yticklabels=False,
+                cbar=False)
+    plt.savefig(f'{name}.png')
+    plt.close()

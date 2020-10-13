@@ -302,7 +302,7 @@ class CoNLL(Transform):
             return False
         return next(tarjan(sequence), None) is None
 
-    def load(self, data, proj=False, max_len=None, **kwargs):
+    def load(self, data, proj=False, max_len=None, portion=1, **kwargs):
         """
         Load data in CoNLL-X format.
         Also support for loading data from CoNLL-U file with comments and non-integer IDs.
@@ -333,11 +333,13 @@ class CoNLL(Transform):
                 sent_id += 1
                 start = i + 1
             i += 1
+        # sentences = sentences[::portion]
         if proj:
             sentences = [i for i in sentences if self.isprojective(list(map(int, i.arcs)))]
         if max_len is not None:
             sentences = [i for i in sentences if len(i) < max_len]
-
+        # remove sentence over there make sure labeled data are same between supervised and semi-supervised
+        sentences = sentences[::portion]
         return sentences
 
 
@@ -622,7 +624,7 @@ class Tree(Transform):
             return [tree]
         return nltk.Tree(root, track(iter(sequence)))
 
-    def load(self, data, max_len=None, **kwargs):
+    def load(self, data, max_len=None, portion=1, **kwargs):
         """
         Args:
             data (list[list] or str):
@@ -642,14 +644,16 @@ class Tree(Transform):
             trees = [self.totree(i, self.root) for i in data]
 
         i, sentences = 0, []
-        for tree in progress_bar(trees, leave=False):
+        for sent_idx, tree in progress_bar(enumerate(trees), leave=False):
+            # if len(tree) == 1 and not isinstance(tree[0][0], nltk.Tree) and (sent_idx % portion != 0):
             if len(tree) == 1 and not isinstance(tree[0][0], nltk.Tree):
                 continue
             sentences.append(TreeSentence(self, tree))
             i += 1
         if max_len is not None:
             sentences = [i for i in sentences if len(i) < max_len]
-
+        # remove sentence over there make sure labeled data are same between supervised and semi-supervised
+        sentences = sentences[::portion]
         return sentences
 
 

@@ -58,6 +58,7 @@ class AttachmentMetric(Metric):
     @property
     def score(self):
         return self.las
+        # return self.uas
 
     @property
     def ucm(self):

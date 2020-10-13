@@ -231,7 +231,9 @@ class BiaffineDependencyParser(Parser):
             return parser
 
         logger.info("Build the fields")
-        get_supervised_mask = partial(assign_supervied_flag, portion=args.portion)
+        # training_portion: if it is semi-supervised training mask partial data as labeled, otherwise only mask all data as labeled
+        training_portion = args.portion if args.semi_supervised else 1
+        get_supervised_mask = partial(assign_supervied_flag, portion=training_portion)
         SUPERVISED = Field('supervised_mask', use_vocab=False, sequential=False, 
                          fn=get_supervised_mask, dtype=torch.bool)
         WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
@@ -255,8 +257,9 @@ class BiaffineDependencyParser(Parser):
             transform = CoNLL(SENTID=SUPERVISED, FORM=(WORD, FEAT), HEAD=ARC, DEPREL=REL)
         else:
             transform = CoNLL(SENTID=SUPERVISED, FORM=WORD, CPOS=FEAT, HEAD=ARC, DEPREL=REL)
-
-        train = Dataset(transform, args.train)
+        # loading_portion: if it is semi-supervised training load all data, otherwise only load partial data
+        loading_portion = 1 if args.semi_supervised else args.portion
+        train = Dataset(transform, args.train, portion=loading_portion)
         WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
         FEAT.build(train)
         REL.build(train)

@@ -31,3 +31,6 @@ __pycache__
 
 # vscode
 .vscode
+
+# model vis
+*.png

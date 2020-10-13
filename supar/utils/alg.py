@@ -661,6 +661,7 @@ def crf(scores, mask):
     training = scores.requires_grad
     # always enable the gradient computation of scores
     # in order for the computation of marginal probs
+    scores = scores.to(dtype=torch.float64)
     _, s_c = inside(scores.requires_grad_(), mask)
     logZ = s_c[0].gather(0, lens.unsqueeze(0)).sum()
     # marginal probs are used for decoding, and can be computed by
@@ -677,8 +678,8 @@ def inside(scores, mask):
     batch_size, seq_len, _ = scores.shape
     # [seq_len, seq_len, batch_size]
     scores = scores.permute(2, 1, 0)
-    s_i = torch.full_like(scores, float('-inf'))
-    s_c = torch.full_like(scores, float('-inf'))
+    s_i = torch.full_like(scores, float('-inf'), dtype=torch.float64)
+    s_c = torch.full_like(scores, float('-inf'), dtype=torch.float64)
     s_c.diagonal().fill_(0)
 
     for w in range(1, seq_len):

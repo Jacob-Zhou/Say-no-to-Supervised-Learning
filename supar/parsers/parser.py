@@ -47,6 +47,8 @@ class Parser(object):
         if dist.is_initialized():
             args.batch_size = args.batch_size // dist.get_world_size()
         logger.info("Load the data")
+        raw_portion = args.portion
+        args.portion = 1 if args.semi_supervised else args.portion
         train = Dataset(self.transform, args.train, **args)
         dev = Dataset(self.transform, args.dev)
         test = Dataset(self.transform, args.test)
@@ -54,6 +56,7 @@ class Parser(object):
         dev.build(args.batch_size, args.buckets)
         test.build(args.batch_size, args.buckets)
         logger.info(f"\n{'train:':6} {train}\n{'dev:':6} {dev}\n{'test:':6} {test}\n")
+        args.portion = raw_portion
 
         logger.info(f"{self.model}\n")
         if dist.is_initialized():

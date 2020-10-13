@@ -19,13 +19,16 @@ class MLP(nn.Module):
             If non-zero, introduce a `SharedDropout` layer on the output with this dropout ratio. Default: 0.
     """
 
-    def __init__(self, n_in, n_out, dropout=0):
+    def __init__(self, n_in, n_out, activation=None, dropout=0):
         super().__init__()
 
         self.n_in = n_in
         self.n_out = n_out
         self.linear = nn.Linear(n_in, n_out)
-        self.activation = nn.LeakyReLU(negative_slope=0.1)
+        if activation:
+            self.activation = activation
+        else:
+            self.activation = nn.LeakyReLU(negative_slope=0.1)
         self.dropout = SharedDropout(p=dropout)
 
         self.reset_parameters()

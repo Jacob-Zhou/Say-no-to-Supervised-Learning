@@ -124,14 +124,16 @@ class VAEDependencyParser(BiaffineDependencyParser):
             batch_size, seq_len = words.shape
 
             mask = words.ne(self.WORD.pad_index)
+            mask[:, 0] = 0
             word_mask  = mask & words.lt(self.args.n_words)
             # ignore the first token of each sentence
-            mask[:, 0] = 0
             s_arc, s_rel, s_word, kld_loss = self.model(words, feats, supervised_mask, arcs)
             loss = self.model.loss(s_arc, s_rel, s_word, 
                                           arcs, rels, words, 
                                           kld_loss, mask, word_mask,
                                           supervised_mask=supervised_mask)
+            # if torch.isnan(loss).any():
+                # exit()
             loss.backward()
 
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
@@ -159,7 +161,7 @@ class VAEDependencyParser(BiaffineDependencyParser):
             mask[:, 0] = 0
             batch_size, seq_len = words.shape
             s_arc, s_rel = self.model(words, feats)
-            # s_arc, s_rel, s_word, kld_loss = self.model(words, feats, mask.new_ones(batch_size), arcs)
+            # s_arc, s_rel, s_word, kld_loss = self.model(words, feats, mask.new_zeros(batch_size), arcs)
 
             loss = torch.zeros(1)
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask,
