@@ -483,16 +483,21 @@ class VAEDependencyModel(BiaffineDependencyModel):
         supervised_mask = mask & supervised_mask[:, None]
 
         # supervised loss
-        s_arc, arcs = s_arc[supervised_mask], arcs[supervised_mask]
-        s_rel, rels = s_rel[supervised_mask], rels[supervised_mask]
-        s_rel = s_rel[torch.arange(len(arcs)), arcs]
-        arc_loss = self.criterion(s_arc, arcs)
-        rel_loss = self.criterion(s_rel, rels)
+        arc_loss = 0.
+        rel_loss = 0.
+        if supervised_mask.any():
+            s_arc, arcs = s_arc[supervised_mask], arcs[supervised_mask]
+            s_rel, rels = s_rel[supervised_mask], rels[supervised_mask]
+            s_rel = s_rel[torch.arange(len(arcs)), arcs]
+            arc_loss = self.criterion(s_arc, arcs)
+            rel_loss = self.criterion(s_rel, rels)
 
         # reconstruction loss (no matter supervised learning or unsupervised learning)
         weighted_p_word, words = weighted_p_word[word_mask], words[word_mask]
         recons_loss = -weighted_p_word.gather(-1, words[:, None]).mean()
         z_kld_loss, y_kld_loss = kld_loss
+
+        # print(f"arc_loss={arc_loss :.3f} rel_loss={rel_loss :.3f} recons_loss={recons_loss :.3f} z_kld_loss={z_kld_loss :.3f} y_kld_loss={y_kld_loss :.3f}")
 
         return self.args.tree_weight * (arc_loss + rel_loss) + \
             self.args.recons_weight * recons_loss + \

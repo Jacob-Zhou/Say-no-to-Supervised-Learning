@@ -112,16 +112,23 @@ class VAEDependencyParser(BiaffineDependencyParser):
 
         return super().predict(**Config().update(locals()))
 
-    def _train(self, loader):
+    def _train(self, loader, pure_supervised=False):
         self.model.train()
 
         bar, metric = progress_bar(loader), AttachmentMetric()
         for supervised_mask, words, feats, arcs, rels in bar:
-            unsuper_loss = self.args.semi_supervised
+            unsuper_loss = ~pure_supervised
             if ~supervised_mask.any() and ~unsuper_loss:
                 continue
             self.optimizer.zero_grad()
-            batch_size, seq_len = words.shape
+
+            if pure_supervised:
+                words = words[supervised_mask]
+                feats = feats[supervised_mask]
+                arcs  = arcs[supervised_mask]
+                rels  = rels[supervised_mask]
+                batch_size, _ = words.shape
+                supervised_mask = words.new_ones(batch_size, dtype=torch.bool)
 
             mask = words.ne(self.WORD.pad_index)
             mask[:, 0] = 0
@@ -132,8 +139,6 @@ class VAEDependencyParser(BiaffineDependencyParser):
                                           arcs, rels, words, 
                                           kld_loss, mask, word_mask,
                                           supervised_mask=supervised_mask)
-            # if torch.isnan(loss).any():
-                # exit()
             loss.backward()
 
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)

@@ -76,7 +76,8 @@ class Parser(object):
             start = datetime.now()
 
             logger.info(f"Epoch {epoch} / {args.epochs}:")
-            self._train(train.loader)
+            self._train(train.loader, pure_supervised=True)
+            self._train(train.loader, pure_supervised=False)
             loss, dev_metric = self._evaluate(dev.loader)
             logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}")
             loss, test_metric = self._evaluate(test.loader)
