@@ -67,7 +67,8 @@ class Parser(object):
                               args.lr,
                               (args.mu, args.nu),
                               args.epsilon)
-        self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
+        decay_steps = 2 * args.decay_epochs * len(train.loader)
+        self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/decay_steps))
 
         elapsed = timedelta()
         best_e, best_metric = 1, Metric()

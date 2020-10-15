@@ -34,3 +34,6 @@ __pycache__
 
 # model vis
 *.png
+
+# nohup
+nohup.out
