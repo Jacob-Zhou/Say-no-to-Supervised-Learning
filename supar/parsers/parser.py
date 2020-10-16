@@ -67,7 +67,8 @@ class Parser(object):
                               args.lr,
                               (args.mu, args.nu),
                               args.epsilon)
-        decay_steps = 2 * args.decay_epochs * len(train.loader)
+        decay_factor = 2 if args.semi_supervised else 1
+        decay_steps = decay_factor * args.decay_epochs * len(train.loader)
         self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/decay_steps))
 
         elapsed = timedelta()
@@ -78,7 +79,8 @@ class Parser(object):
 
             logger.info(f"Epoch {epoch} / {args.epochs}:")
             self._train(train.loader, pure_supervised=True)
-            self._train(train.loader, pure_supervised=False)
+            if args.semi_supervised:
+                self._train(train.loader, pure_supervised=False)
             loss, dev_metric = self._evaluate(dev.loader)
             logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}")
             loss, test_metric = self._evaluate(test.loader)

@@ -121,13 +121,22 @@ class CRFNPDependencyParser(BiaffineDependencyParser):
 
         return super().predict(**Config().update(locals()))
 
-    def _train(self, loader):
+    def _train(self, loader, pure_supervised=True):
         self.model.train()
 
         bar, metric = progress_bar(loader), AttachmentMetric()
+        if not pure_supervised:
+            raise NotImplementedError()
 
-        for words, feats, arcs, rels in bar:
+        for supervised_mask, words, feats, arcs, rels in bar:
+            if ~supervised_mask.any():
+                continue
             self.optimizer.zero_grad()
+
+            words = words[supervised_mask]
+            feats = feats[supervised_mask]
+            arcs  = arcs[supervised_mask]
+            rels  = rels[supervised_mask]
 
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence

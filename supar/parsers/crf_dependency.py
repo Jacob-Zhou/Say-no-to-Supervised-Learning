@@ -117,16 +117,22 @@ class CRFDependencyParser(BiaffineDependencyParser):
 
         return super().predict(**Config().update(locals()))
 
-    def _train(self, loader):
+    def _train(self, loader, pure_supervised=True):
         self.model.train()
 
         bar, metric = progress_bar(loader), AttachmentMetric()
+        if not pure_supervised:
+            raise NotImplementedError()
 
         for supervised_mask, words, feats, arcs, rels in bar:
-            unsuper_loss = self.args.semi_supervised
-            if ~supervised_mask.any() and ~unsuper_loss:
+            if ~supervised_mask.any():
                 continue
             self.optimizer.zero_grad()
+
+            words = words[supervised_mask]
+            feats = feats[supervised_mask]
+            arcs  = arcs[supervised_mask]
+            rels  = rels[supervised_mask]
             batch_size, seq_len = words.shape
 
             mask = words.ne(self.WORD.pad_index)
