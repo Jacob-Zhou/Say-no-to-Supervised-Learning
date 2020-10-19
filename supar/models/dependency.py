@@ -75,6 +75,7 @@ class BiaffineDependencyModel(nn.Module):
     def __init__(self,
                  n_words,
                  n_feats,
+                 n_cpos,
                  n_rels,
                  feat='char',
                  n_embed=100,
@@ -112,6 +113,8 @@ class BiaffineDependencyModel(nn.Module):
                                             pad_index=feat_pad_index,
                                             dropout=mix_dropout)
             self.n_feat_embed = self.feat_embed.n_out
+            self.cpos_embed = nn.Embedding(num_embeddings=n_cpos,
+                                           embedding_dim=n_feat_embed)
         elif feat == 'tag':
             self.feat_embed = nn.Embedding(num_embeddings=n_feats,
                                            embedding_dim=n_feat_embed)
@@ -120,7 +123,7 @@ class BiaffineDependencyModel(nn.Module):
         self.embed_dropout = IndependentDropout(p=embed_dropout)
 
         # the lstm layer
-        self.lstm = BiLSTM(input_size=n_embed+n_feat_embed,
+        self.lstm = BiLSTM(input_size=n_embed+n_feat_embed*2,
                            hidden_size=n_lstm_hidden,
                            num_layers=n_lstm_layers,
                            dropout=lstm_dropout)
@@ -158,7 +161,7 @@ class BiaffineDependencyModel(nn.Module):
             nn.init.zeros_(self.word_embed.weight)
         return self
 
-    def forward(self, words, feats):
+    def forward(self, words, feats, tags):
         """
         Args:
             words (torch.LongTensor) [batch_size, seq_len]:
@@ -189,9 +192,10 @@ class BiaffineDependencyModel(nn.Module):
         if hasattr(self, 'pretrained'):
             word_embed += self.pretrained(words)
         feat_embed = self.feat_embed(feats)
-        word_embed, feat_embed = self.embed_dropout(word_embed, feat_embed)
+        tags_embed = self.cpos_embed(tags)
+        word_embed, feat_embed, tags_embed = self.embed_dropout(word_embed, feat_embed, tags_embed)
         # concatenate the word and feat representations
-        embed = torch.cat((word_embed, feat_embed), -1)
+        embed = torch.cat((word_embed, feat_embed, tags_embed), -1)
 
         x = pack_padded_sequence(embed, mask.sum(1), True, False)
         x, _ = self.lstm(x)

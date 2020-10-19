@@ -31,3 +31,9 @@ __pycache__
 
 # vscode
 .vscode
+
+# nohup
+nohup.out
+
+# image
+*.png

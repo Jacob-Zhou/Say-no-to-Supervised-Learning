@@ -127,13 +127,13 @@ class BiaffineDependencyParser(Parser):
 
         bar, metric = progress_bar(loader), AttachmentMetric()
 
-        for words, feats, arcs, rels in bar:
+        for words, feats, tags, arcs, rels in bar:
             self.optimizer.zero_grad()
 
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
-            s_arc, s_rel = self.model(words, feats)
+            s_arc, s_rel = self.model(words, feats, tags)
             loss = self.model.loss(s_arc, s_rel, arcs, rels, mask)
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
@@ -153,11 +153,11 @@ class BiaffineDependencyParser(Parser):
 
         total_loss, metric = 0, AttachmentMetric()
 
-        for words, feats, arcs, rels in loader:
+        for words, feats, tags, arcs, rels in loader:
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
-            s_arc, s_rel = self.model(words, feats)
+            s_arc, s_rel = self.model(words, feats, tags)
             loss = self.model.loss(s_arc, s_rel, arcs, rels, mask)
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask,
                                                      self.args.tree,
@@ -243,27 +243,31 @@ class BiaffineDependencyParser(Parser):
                                 fix_len=args.fix_len,
                                 tokenize=tokenizer.tokenize)
             FEAT.vocab = tokenizer.get_vocab()
+            CPOS = Field('tags', bos=bos)
         else:
             FEAT = Field('tags', bos=bos)
         ARC = Field('arcs', bos=bos, use_vocab=False, fn=CoNLL.get_arcs)
         REL = Field('rels', bos=bos)
         if args.feat in ('char', 'bert'):
-            transform = CoNLL(FORM=(WORD, FEAT), HEAD=ARC, DEPREL=REL)
+            transform = CoNLL(FORM=(WORD, FEAT), CPOS=CPOS, HEAD=ARC, DEPREL=REL)
         else:
             transform = CoNLL(FORM=WORD, CPOS=FEAT, HEAD=ARC, DEPREL=REL)
 
         train = Dataset(transform, args.train)
         WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
         FEAT.build(train)
+        CPOS.build(train)
         REL.build(train)
         args.update({
             'n_words': WORD.vocab.n_init,
             'n_feats': len(FEAT.vocab),
+            'n_cpos': len(CPOS.vocab),
             'n_rels': len(REL.vocab),
             'pad_index': WORD.pad_index,
             'unk_index': WORD.unk_index,
             'bos_index': WORD.bos_index,
-            'feat_pad_index': FEAT.pad_index
+            'feat_pad_index': FEAT.pad_index,
+            'cpos_pad_index': CPOS.pad_index
         })
         model = cls.MODEL(**args)
         model.load_pretrained(WORD.embed).to(args.device)
