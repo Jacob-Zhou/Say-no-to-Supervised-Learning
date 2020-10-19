@@ -441,7 +441,6 @@ class VAEDependencyModel(BiaffineDependencyModel):
             # [unsupervised_batch_size, seq_len, seq_len]
             s_unsuper_arc = s_arc[~supervised_mask]
             s_tree = s_unsuper_arc
-            sample_tree = crf(s_tree, mask[~supervised_mask])
             s_sample_tree = torch.masked_fill(s_tree, ~mask2d[~supervised_mask], float('-inf'))
             sample_tree = s_sample_tree.softmax(-1)
             ent = sample_tree * s_sample_tree.log_softmax(-1).masked_fill(~mask2d[~supervised_mask], 0)
@@ -454,7 +453,6 @@ class VAEDependencyModel(BiaffineDependencyModel):
 
         # [batch_size, seq_len, hidden_size*2]
         z_kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=-1))
-        # kld_loss -= ent.sum(-1).mean() if ent is not None else 0.
         y_kld_loss = -ent.sum(-1).mean() if ent is not None else 0.
         return s_arc, s_rel, weighted_p_word, (z_kld_loss, y_kld_loss)
 
@@ -496,8 +494,6 @@ class VAEDependencyModel(BiaffineDependencyModel):
         weighted_p_word, words = weighted_p_word[word_mask], words[word_mask]
         recons_loss = -weighted_p_word.gather(-1, words[:, None]).mean()
         z_kld_loss, y_kld_loss = kld_loss
-
-        # print(f"arc_loss={arc_loss :.3f} rel_loss={rel_loss :.3f} recons_loss={recons_loss :.3f} z_kld_loss={z_kld_loss :.3f} y_kld_loss={y_kld_loss :.3f}")
 
         return self.args.tree_weight * (arc_loss + rel_loss) + \
             self.args.recons_weight * recons_loss + \
