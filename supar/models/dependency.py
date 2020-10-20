@@ -339,17 +339,15 @@ class VAEDependencyModel(BiaffineDependencyModel):
         self.fc_mu = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
         self.fc_var = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
 
-        # self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec*2)
-        self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec)
+        self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec*2)
+        # self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec)
 
         self.mlp_dec = MLP(n_mlp_dec, n_embed, activation=nn.Identity())
 
         self.generator = nn.Linear(n_embed, n_words, bias=False)
         # self.generator.weight = self.word_embed.weight
 
-        # self.crf = CRFDependency()
-
-        # self.nll_criterion = nn.NLLLoss()
+        self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, words, feats, supervised_mask=None, arcs=None):
         """
@@ -437,26 +435,41 @@ class VAEDependencyModel(BiaffineDependencyModel):
             gold_tree = one_hot(gold_tree, num_classes=seq_len)
             tree[supervised_mask] = gold_tree.float()
 
+        eps = torch.finfo(torch.float).eps
+
         if not supervised_mask.all():
             # [unsupervised_batch_size, seq_len, seq_len]
             s_unsuper_arc = s_arc[~supervised_mask]
-            s_tree = s_unsuper_arc
+            uni_dist = Uniform(eps, 1-eps)
+            noise = uni_dist.sample(s_unsuper_arc.shape)
+            noise = -(-noise.log()).log().to(s_unsuper_arc)
+            s_tree = s_unsuper_arc + noise
             s_sample_tree = torch.masked_fill(s_tree, ~mask2d[~supervised_mask], float('-inf'))
             sample_tree = s_sample_tree.softmax(-1)
             ent = sample_tree * s_sample_tree.log_softmax(-1).masked_fill(~mask2d[~supervised_mask], 0)
             tree[~supervised_mask] = sample_tree.float()
+        # if torch.isnan(ent).any():
+        #     print()
+        #     # heatmap(sample_tree.mean(0), 'p')
+        #     print(sample_tree[torch.isnan(ent)])
+        #     print(noise[torch.isnan(ent)])
+        #     heatmap(ent.mean(0))
+        #     print(sample_tree.shape)
 
-        r_dec = self.mlp_gnn(z)
-        r_dec  = self.mlp_dec(r_dec)
+        r_head, r_dep = self.mlp_gnn(z).chunk(2, dim=-1)
+
+        r_head = torch.einsum("bxd,bxy->byd", r_head, tree) / (tree.sum(1)[..., None]+eps)
+        r_dep  = torch.einsum("bxd,byx->byd", r_dep, tree) / (tree.sum(2)[..., None]+eps)
+
+        r_dec  = self.mlp_dec(r_head + r_dep)
         s_word = self.generator(r_dec)
-        weighted_p_word  = torch.einsum("bxd,byx->byd", s_word.log_softmax(-1), tree)
 
         # [batch_size, seq_len, hidden_size*2]
         z_kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=-1))
         y_kld_loss = -ent.sum(-1).mean() if ent is not None else 0.
-        return s_arc, s_rel, weighted_p_word, (z_kld_loss, y_kld_loss)
+        return s_arc, s_rel, s_word, (z_kld_loss, y_kld_loss)
 
-    def loss(self, s_arc, s_rel, weighted_p_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
+    def loss(self, s_arc, s_rel, s_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
         """
         Args:
             s_arc (torch.Tensor): [batch_size, seq_len, seq_len]
@@ -491,9 +504,17 @@ class VAEDependencyModel(BiaffineDependencyModel):
             rel_loss = self.criterion(s_rel, rels)
 
         # reconstruction loss (no matter supervised learning or unsupervised learning)
-        weighted_p_word, words = weighted_p_word[word_mask], words[word_mask]
-        recons_loss = -weighted_p_word.gather(-1, words[:, None]).mean()
+        s_word, words = s_word[word_mask], words[word_mask]
+        recons_loss = self.criterion(s_word, words)
         z_kld_loss, y_kld_loss = kld_loss
+        # print()
+        # print(f"arc_loss:    {arc_loss :.3f}")
+        # print(f"rel_loss:    {rel_loss :.3f}")
+        # print(f"recons_loss: {recons_loss :.3f}")
+        # print(f"z_kld_loss:  {z_kld_loss :.3f}")
+        # print(f"y_kld_loss:  {y_kld_loss :.3f}")
+        # if torch.isnan(arc_loss + rel_loss + recons_loss + z_kld_loss + y_kld_loss):
+        #     exit()
 
         return self.args.tree_weight * (arc_loss + rel_loss) + \
             self.args.recons_weight * recons_loss + \
@@ -759,7 +780,8 @@ def heatmap(corr, name='matrix'):
 
     # Draw the heatmap with the mask and correct aspect ratio
     sns.heatmap(corr.detach().cpu(), cmap=cmap, center=0, ax=ax,
-                vmin=-1.1, vmax=1.1, square=True, linewidths=.5,
+                # vmin=-1.1, vmax=1.1, 
+                square=True, linewidths=.5,
                 xticklabels=False, yticklabels=False,
                 cbar=False)
     plt.savefig(f'{name}.png')
