@@ -127,23 +127,44 @@ class VAEDependencyParser(BiaffineDependencyParser):
                 feats = feats[supervised_mask]
                 arcs  = arcs[supervised_mask]
                 rels  = rels[supervised_mask]
-                batch_size, _ = words.shape
-                supervised_mask = words.new_ones(batch_size, dtype=torch.bool)
+                supervised_mask = words.new_ones(words.shape[0], dtype=torch.bool)
 
-            mask = words.ne(self.WORD.pad_index)
-            mask[:, 0] = 0
-            word_mask  = mask & words.lt(self.args.n_words)
-            # ignore the first token of each sentence
-            s_arc, s_rel, s_word, kld_loss = self.model(words, feats, supervised_mask, arcs)
-            loss = self.model.loss(s_arc, s_rel, s_word, 
-                                          arcs, rels, words, 
-                                          kld_loss, mask, word_mask,
-                                          supervised_mask=supervised_mask)
-            loss.backward()
+                words_list = [words]
+                feats_list = [feats]
+                arcs_list  = [arcs]
+                rels_list  = [rels]
+                supervised_mask_list = [supervised_mask]
+            else:
+                # batch_size = words.shape[0]
+                shard_num = 20
+                words_list = words.split(shard_num)
+                feats_list = feats.split(shard_num)
+                arcs_list  = arcs.split(shard_num)
+                rels_list  = rels.split(shard_num)
+                supervised_mask_list = supervised_mask.split(shard_num)
+
+            s_arc, s_rel = [], []
+            for _words, _feats, _arcs, _rels, _supervised_mask in zip(words_list, feats_list, arcs_list, rels_list, supervised_mask_list):
+                mask = _words.ne(self.WORD.pad_index)
+                mask[:, 0] = 0
+                word_mask  = mask & _words.lt(self.args.n_words)
+                # ignore the first token of each sentence
+                _s_arc, _s_rel, p_word, kld_loss = self.model(_words, _feats, _supervised_mask, _arcs, _rels)
+                s_arc.append(_s_arc)
+                s_rel.append(_s_rel)
+                loss = self.model.loss(_s_arc, _s_rel, p_word, 
+                                        _arcs, _rels, _words, 
+                                        kld_loss, mask, word_mask,
+                                        supervised_mask=_supervised_mask)
+                loss.backward()
 
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
             self.optimizer.step()
             self.scheduler.step()
+
+            mask = words.ne(self.WORD.pad_index)
+            s_arc = torch.cat(s_arc, 0)
+            s_rel = torch.cat(s_rel, 0)
 
             arc_preds, rel_preds = self.model.decode(s_arc, s_rel, mask)
             if self.args.partial:

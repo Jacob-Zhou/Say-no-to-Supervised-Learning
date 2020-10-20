@@ -335,6 +335,7 @@ class VAEDependencyModel(BiaffineDependencyModel):
         n_lstm_hidden = kwargs['n_lstm_hidden']
         n_mlp_dec     = kwargs['n_mlp_dec']
         n_words       = kwargs['n_words']
+        n_rels        = kwargs['n_rels']
 
         self.fc_mu = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
         self.fc_var = nn.Linear(n_lstm_hidden*2, n_mlp_dec)
@@ -342,16 +343,11 @@ class VAEDependencyModel(BiaffineDependencyModel):
         # self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec*2)
         self.mlp_gnn = MLP(n_mlp_dec, n_mlp_dec)
 
-        self.mlp_dec = MLP(n_mlp_dec, n_embed, activation=nn.Identity())
+        self.mlp_dec = MLP(n_mlp_dec, n_embed*n_rels, activation=nn.Identity())
 
         self.generator = nn.Linear(n_embed, n_words, bias=False)
-        # self.generator.weight = self.word_embed.weight
 
-        # self.crf = CRFDependency()
-
-        # self.nll_criterion = nn.NLLLoss()
-
-    def forward(self, words, feats, supervised_mask=None, arcs=None):
+    def forward(self, words, feats, supervised_mask=None, arcs=None, rels=None):
         """
         Args:
             words (torch.LongTensor) [batch_size, seq_len]:
@@ -418,42 +414,59 @@ class VAEDependencyModel(BiaffineDependencyModel):
         eps = torch.randn_like(std)
         z = eps * std + mu
 
-        tree = torch.zeros_like(s_arc)
+        # [batch_size, seq_len, seq_len, n_rels]
+        tree = torch.zeros_like(s_rel)
 
         # shift left predict
         # [batch_size, seq_len]
         mask2d = mask.view(batch_size, 1, seq_len).repeat(1, seq_len, 1)
         mask2d.diagonal(dim1=-2, dim2=-1)[:] = 0
 
-        if supervised_mask is None or arcs is None:
+        if supervised_mask is None or arcs is None or rels is None:
             supervised_mask = mask.new_zeros([batch_size])
 
         ent = None
 
+        n_rels = s_rel.shape[-1]
+
         if supervised_mask.any():
             # [supervised_batch_size, seq_len]
-            gold_tree = arcs[supervised_mask]
-            # [supervised_batch_size, seq_len, seq_len]
-            gold_tree = one_hot(gold_tree, num_classes=seq_len)
+            gold_tree = torch.zeros_like(s_rel[supervised_mask])
+            gold_rel = rels[supervised_mask]
+            gold_arcs_flat = arcs[supervised_mask].view(-1)
+            # [supervised_batch_size, seq_len, n_rels]
+            gold_rel = one_hot(gold_rel, num_classes=n_rels).float()
+            # [supervised_batch_size*seq_len, n_rels]
+            gold_tree = gold_tree.contiguous().view(-1, seq_len, n_rels)
+            gold_tree[torch.arange(len(gold_arcs_flat)), gold_arcs_flat] = gold_rel.view(-1, n_rels)
+            gold_tree = gold_tree.contiguous().view(-1, seq_len, seq_len, n_rels)
             tree[supervised_mask] = gold_tree.float()
 
         if not supervised_mask.all():
-            # [unsupervised_batch_size, seq_len, seq_len]
+            # Q(y|x):    [unsupervised_batch_size, seq_len, seq_len]
             s_unsuper_arc = s_arc[~supervised_mask]
-            s_tree = s_unsuper_arc
-            s_sample_tree = torch.masked_fill(s_tree, ~mask2d[~supervised_mask], float('-inf'))
-            sample_tree = s_sample_tree.softmax(-1)
-            ent = sample_tree * s_sample_tree.log_softmax(-1).masked_fill(~mask2d[~supervised_mask], 0)
-            tree[~supervised_mask] = sample_tree.float()
+            s_unsuper_arc = torch.masked_fill(s_unsuper_arc, ~mask2d[~supervised_mask], float('-inf'))
+            p_arc = s_unsuper_arc.softmax(-1)
+            # Q(t|y, x): [unsupervised_batch_size, seq_len, seq_len, n_rels]
+            s_unsuper_rel = s_rel[~supervised_mask]
+            p_rel = s_unsuper_rel.softmax(-1)
+            p_tree = p_arc.unsqueeze(-1) * p_rel
+            ent = p_tree * (s_unsuper_arc.log_softmax(-1).unsqueeze(-1) + s_unsuper_rel.log_softmax(-1)).masked_fill(~mask2d[~supervised_mask][..., None], 0.)
+            tree[~supervised_mask] = p_tree.float()
+
+        tree = tree.float()
 
         r_dec = self.mlp_gnn(z)
+        # [batch_size, seq_len, n_mlp_dec] -> [batch_size, seq_len, n_embed*n_rels]
         r_dec  = self.mlp_dec(r_dec)
+        r_dec  = r_dec.view(batch_size, seq_len, n_rels, -1)
         s_word = self.generator(r_dec)
-        weighted_p_word  = torch.einsum("bxd,byx->byd", s_word.log_softmax(-1), tree)
+        # P(x|y, t)
+        weighted_p_word  = torch.einsum("bxtd,byxt->byd", s_word.log_softmax(-1), tree)
 
         # [batch_size, seq_len, hidden_size*2]
         z_kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=-1))
-        y_kld_loss = -ent.sum(-1).mean() if ent is not None else 0.
+        y_kld_loss = -ent.sum((-1, -2)).mean().float() if ent is not None else 0.
         return s_arc, s_rel, weighted_p_word, (z_kld_loss, y_kld_loss)
 
     def loss(self, s_arc, s_rel, weighted_p_word, arcs, rels, words, kld_loss, mask, word_mask, supervised_mask=None):
@@ -494,6 +507,13 @@ class VAEDependencyModel(BiaffineDependencyModel):
         weighted_p_word, words = weighted_p_word[word_mask], words[word_mask]
         recons_loss = -weighted_p_word.gather(-1, words[:, None]).mean()
         z_kld_loss, y_kld_loss = kld_loss
+
+        # print()
+        # print(f"arc_loss:    {arc_loss :.3f}")
+        # print(f"rel_loss:    {rel_loss :.3f}")
+        # print(f"recons_loss: {recons_loss :.3f}")
+        # print(f"z_kld_loss:  {z_kld_loss :.3f}")
+        # print(f"y_kld_loss:  {y_kld_loss :.3f}")
 
         return self.args.tree_weight * (arc_loss + rel_loss) + \
             self.args.recons_weight * recons_loss + \
