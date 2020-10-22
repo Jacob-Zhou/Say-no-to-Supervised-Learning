@@ -440,21 +440,15 @@ class VAEDependencyModel(BiaffineDependencyModel):
         if not supervised_mask.all():
             # [unsupervised_batch_size, seq_len, seq_len]
             s_unsuper_arc = s_arc[~supervised_mask]
-            uni_dist = Uniform(eps, 1-eps)
-            noise = uni_dist.sample(s_unsuper_arc.shape)
-            noise = -(-noise.log()).log().to(s_unsuper_arc)
-            s_tree = s_unsuper_arc + noise
+            # uni_dist = Uniform(eps, 1-eps)
+            # noise = uni_dist.sample(s_unsuper_arc.shape)
+            # noise = -(-noise.log()).log().to(s_unsuper_arc)
+            # s_tree = s_unsuper_arc + noise
+            s_tree = s_unsuper_arc
             s_sample_tree = torch.masked_fill(s_tree, ~mask2d[~supervised_mask], float('-inf'))
             sample_tree = s_sample_tree.softmax(-1)
             ent = sample_tree * s_sample_tree.log_softmax(-1).masked_fill(~mask2d[~supervised_mask], 0)
             tree[~supervised_mask] = sample_tree.float()
-        # if torch.isnan(ent).any():
-        #     print()
-        #     # heatmap(sample_tree.mean(0), 'p')
-        #     print(sample_tree[torch.isnan(ent)])
-        #     print(noise[torch.isnan(ent)])
-        #     heatmap(ent.mean(0))
-        #     print(sample_tree.shape)
 
         r_head, r_dep = self.mlp_gnn(z).chunk(2, dim=-1)
 
