@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import unicodedata
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def ispunct(token):
@@ -76,3 +78,28 @@ def pad(tensors, padding_value=0, total_length=None):
     for i, tensor in enumerate(tensors):
         out_tensor[i][[slice(0, i) for i in tensor.size()]] = tensor
     return out_tensor
+
+
+def heatmap(corr, labels=None, name='matrix'):
+    sns.set(style="white")
+
+    shape = corr.t().shape
+    assert len(shape) == 2
+    shape = (shape[0] * 2, shape[1])
+
+    # Set up the matplotlib figure
+    f, ax = plt.subplots(ncols=2, figsize=shape)
+
+    cmap = "RdBu"
+
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(corr / (corr.sum(0)[None, :] + 1e-6), cmap=cmap, center=0, ax=ax[0],
+                square=True, linewidths=.5,
+                xticklabels=False if labels is None else labels, yticklabels=False,
+                cbar=False)
+    sns.heatmap(corr / (corr.sum(1)[: ,None] + 1e-6), cmap=cmap, center=0, ax=ax[1],
+                square=True, linewidths=.5,
+                xticklabels=False if labels is None else labels, yticklabels=False,
+                cbar=False)
+    plt.savefig(f'{name}.png')
+    plt.close()

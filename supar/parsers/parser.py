@@ -12,8 +12,11 @@ from supar.utils.logging import init_logger, logger
 from supar.utils.metric import Metric
 from supar.utils.parallel import DistributedDataParallel as DDP
 from supar.utils.parallel import is_master
+from supar.utils.fn import heatmap
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR
+from collections import Counter
+from pprint import pprint
 
 
 class Parser(object):
@@ -26,7 +29,7 @@ class Parser(object):
         self.model = model
         self.transform = transform
 
-    def train(self, train, dev, test,
+    def train(self, train, dev,
               buckets=32,
               batch_size=5000,
               lr=2e-3,
@@ -49,11 +52,9 @@ class Parser(object):
         logger.info("Load the data")
         train = Dataset(self.transform, args.train, **args)
         dev = Dataset(self.transform, args.dev)
-        test = Dataset(self.transform, args.test)
         train.build(args.batch_size, args.buckets, True, dist.is_initialized())
         dev.build(args.batch_size, args.buckets)
-        test.build(args.batch_size, args.buckets)
-        logger.info(f"\n{'train:':6} {train}\n{'dev:':6} {dev}\n{'test:':6} {test}\n")
+        logger.info(f"\ntrain: {train}\ndev:   {dev}")
 
         logger.info(f"{self.model}\n")
         if dist.is_initialized():
@@ -63,11 +64,19 @@ class Parser(object):
         self.optimizer = Adam(self.model.parameters(),
                               args.lr,
                               (args.mu, args.nu),
-                              args.epsilon)
+                              args.epsilon,
+                              weight_decay=1e-5)
         self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
 
+        logger.info(f"{self.optimizer}\n")
         elapsed = timedelta()
         best_e, best_metric = 1, Metric()
+
+        logger.info(f"Init:")
+        loss, dev_metric = self._evaluate(dev.loader)
+        clusters = dev_metric.clusters
+        logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}\n")
+        heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
         for epoch in range(1, args.epochs + 1):
             start = datetime.now()
@@ -75,9 +84,9 @@ class Parser(object):
             logger.info(f"Epoch {epoch} / {args.epochs}:")
             self._train(train.loader)
             loss, dev_metric = self._evaluate(dev.loader)
+            clusters = dev_metric.clusters
             logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}")
-            loss, test_metric = self._evaluate(test.loader)
-            logger.info(f"{'test:':6} - loss: {loss:.4f} - {test_metric}")
+            heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
             t = datetime.now() - start
             # save the model if it is the best so far
@@ -89,13 +98,13 @@ class Parser(object):
             else:
                 logger.info(f"{t}s elapsed\n")
             elapsed += t
+            if best_metric == 1.:
+                break
             if epoch - best_e >= args.patience:
                 break
-        loss, metric = self.load(args.path)._evaluate(test.loader)
 
         logger.info(f"Epoch {best_e} saved")
         logger.info(f"{'dev:':6} - {best_metric}")
-        logger.info(f"{'test:':6} - {metric}")
         logger.info(f"{elapsed}s elapsed, {elapsed / epoch}s/epoch")
 
     def evaluate(self, data, buckets=8, batch_size=5000, **kwargs):
@@ -113,6 +122,19 @@ class Parser(object):
         loss, metric = self._evaluate(dataset.loader)
         elapsed = datetime.now() - start
         logger.info(f"loss: {loss:.4f} - {metric}")
+        tag_map = {k:self.CPOS.vocab[v] for k,v in metric.tag_map.items()}
+        pprint(tag_map)
+        recalled_tags = Counter(tag_map.values())
+        unrecalled_tags = set(self.CPOS.vocab.stoi) - set(recalled_tags.keys())
+        pprint(recalled_tags)
+        pprint(unrecalled_tags)
+        gold_tag_map = {self.CPOS.vocab[k]:v for k,v in metric.gold_tag_map.items()}
+        pprint(gold_tag_map)
+        unrecalled_tag_map = {g:tag_map[gold_tag_map[g]] for g in self.CPOS.vocab.stoi}
+        unrecalled_tag_map = {k: v for k, v in unrecalled_tag_map.items() if k != v}
+        pprint(unrecalled_tag_map)
+        # heatmap(metric.clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.evaluate.clusters")
+        heatmap(self.model.T.softmax(-1).detach().cpu(), [f"#C{n}#" for n in range(len(self.CPOS.vocab))], f"{args.path}.T.clusters")
         logger.info(f"{elapsed}s elapsed, {len(dataset)/elapsed.total_seconds():.2f} Sents/s")
 
         return loss, metric
@@ -186,7 +208,7 @@ class Parser(object):
             state = torch.hub.load_state_dict_from_url(path)
         cls = supar.PARSER[state['name']] if cls.NAME is None else cls
         args = state['args'].update(args)
-        model = cls.MODEL(**args)
+        model = cls.MODEL(normalize_paras=not args.em_alg, **args)
         model.load_pretrained(state['pretrained'])
         model.load_state_dict(state['state_dict'], False)
         model.to(args.device)

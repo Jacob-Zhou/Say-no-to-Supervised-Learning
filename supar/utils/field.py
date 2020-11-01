@@ -5,6 +5,7 @@ from collections import Counter
 import torch
 from supar.utils.fn import pad
 from supar.utils.vocab import Vocab
+from copy import deepcopy
 
 
 class RawField(object):
@@ -160,7 +161,7 @@ class Field(RawField):
 
         return sequence
 
-    def build(self, dataset, min_freq=1, embed=None):
+    def build(self, dataset, min_freq=1, embed=None, not_extend_vocab=False):
         """
         Construct the Vocab object for this field from the dataset.
         If the Vocab has already existed, this function will have no effect.
@@ -191,9 +192,15 @@ class Field(RawField):
             if embed.unk:
                 tokens[embed.unk_index] = self.unk
 
+            if not_extend_vocab:
+                old_vocab = deepcopy(self.vocab)
+
             self.vocab.extend(tokens)
             self.embed = torch.zeros(len(self.vocab), embed.dim)
             self.embed[self.vocab[tokens]] = embed.vectors
+            if not_extend_vocab:
+                self.vocab = old_vocab
+                self.embed = self.embed[:len(self.vocab)]
             self.embed /= torch.std(self.embed)
 
     def transform(self, sequences):

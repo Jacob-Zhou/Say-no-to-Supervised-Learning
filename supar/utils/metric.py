@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 from collections import Counter
+import torch
+from torch.nn.functional import one_hot
 
 
 class Metric(object):
@@ -17,10 +19,51 @@ class Metric(object):
     def __gt__(self, other):
         return self.score > other
 
+    def __eq__(self, other):
+        return self.score == other
+
     @property
     def score(self):
         return 0.
 
+
+class ManyToOneAccuracy(Metric):
+
+    def __init__(self, n_clusters=1, n_cpos=1, eps=1e-5):
+        super(ManyToOneAccuracy, self).__init__()
+
+        self.n_clusters = n_clusters
+        self.n_cpos     = n_cpos
+        self.eps = eps
+        self.clusters = torch.zeros(self.n_clusters, self.n_cpos)
+
+    def __call__(self, preds, golds, mask):
+        preds = one_hot(preds, num_classes=self.n_clusters).unsqueeze(-1)
+        golds = one_hot(golds, num_classes=self.n_cpos).unsqueeze(-2)
+        preds[~mask] = 0.
+        golds[~mask] = 0.
+        clusters = (preds * golds).sum((0, 1))
+        self.clusters = self.clusters.to(clusters)
+        self.clusters += clusters
+
+    def __repr__(self):
+        return f"Many-to-one Accuracy: {self.accuracy:.2%}"
+
+    @property
+    def score(self):
+        return float(self.accuracy)
+
+    @property
+    def accuracy(self):
+        return (self.clusters.max(dim=1)[0]).sum() / (self.clusters.sum() + self.eps)
+
+    @property
+    def tag_map(self):
+        return {p:g for p, g in enumerate(self.clusters.max(dim=1)[1].tolist())}
+
+    @property
+    def gold_tag_map(self):
+        return {g:p for g, p in enumerate(self.clusters.max(dim=0)[1].tolist())}
 
 class AttachmentMetric(Metric):
 

@@ -172,11 +172,11 @@ class CoNLL(Transform):
 
     @property
     def src(self):
-        return self.FORM, self.CPOS
+        return self.FORM,
 
     @property
     def tgt(self):
-        return self.HEAD, self.DEPREL
+        return self.CPOS,
 
     @classmethod
     def get_arcs(cls, sequence):
