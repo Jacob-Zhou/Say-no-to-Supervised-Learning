@@ -3,30 +3,47 @@
 import unicodedata
 import seaborn as sns
 import matplotlib.pyplot as plt
+from functools import lru_cache
 
 
+@lru_cache(maxsize=1024)
 def ispunct(token):
     return all(unicodedata.category(char).startswith('P')
                for char in token)
 
 
+@lru_cache(maxsize=1024)
 def isfullwidth(token):
     return all(unicodedata.east_asian_width(char) in ['W', 'F', 'A']
                for char in token)
 
 
+@lru_cache(maxsize=1024)
 def islatin(token):
     return all('LATIN' in unicodedata.name(char)
                for char in token)
 
 
+@lru_cache(maxsize=1024)
 def isdigit(token):
     return all('DIGIT' in unicodedata.name(char)
                for char in token)
 
 
+@lru_cache(maxsize=1024)
 def tohalfwidth(token):
     return unicodedata.normalize('NFKC', token)
+
+
+@lru_cache(maxsize=1024)
+def has_number(token):
+    has_num = False
+    num_set = set(range(10))
+    for char in token:
+        if char in num_set:
+            has_num = True
+            break
+    return has_num
 
 
 def stripe(x, n, w, offset=(0, 0), dim=1):

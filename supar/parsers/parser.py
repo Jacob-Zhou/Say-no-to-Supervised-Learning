@@ -61,14 +61,15 @@ class Parser(object):
             self.model = DDP(self.model,
                              device_ids=[dist.get_rank()],
                              find_unused_parameters=True)
-        self.optimizer = Adam(self.model.parameters(),
-                              args.lr,
-                              (args.mu, args.nu),
-                              args.epsilon,
-                              weight_decay=1e-5)
-        self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
+        if not args.em_alg:
+            self.optimizer = Adam(self.model.parameters(),
+                                args.lr,
+                                (args.mu, args.nu),
+                                args.epsilon,
+                                weight_decay=1e-5)
+            self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
+            logger.info(f"{self.optimizer}\n")
 
-        logger.info(f"{self.optimizer}\n")
         elapsed = timedelta()
         best_e, best_metric = 1, Metric()
 

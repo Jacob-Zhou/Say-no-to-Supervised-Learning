@@ -86,9 +86,16 @@ class POSModel(nn.Module):
         self.E = nn.Parameter(torch.ones(n_words, n_cpos))
 
         # transfer prob
-        self.T = nn.Parameter(torch.ones(n_cpos, n_cpos))
-        self.start = nn.Parameter(torch.ones(n_cpos))
-        self.end = nn.Parameter(torch.ones(n_cpos))
+        self.T = nn.Parameter(torch.zeros(n_cpos, n_cpos))
+        self.start = nn.Parameter(torch.zeros(n_cpos))
+        self.end = nn.Parameter(torch.zeros(n_cpos))
+
+        self._params = nn.ParameterDict({
+                'E': self.E,
+                'T': self.T,
+                'start': self.start,
+                'end': self.end,
+        })
 
         self.eps = 1e-6
         self.gamma_sum  = 0
