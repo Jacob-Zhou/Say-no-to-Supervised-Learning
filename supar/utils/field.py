@@ -3,10 +3,11 @@
 from collections import Counter
 
 import torch
-from supar.utils.fn import pad
+from supar.utils.fn import pad, has_number
 from supar.utils.vocab import Vocab
 from copy import deepcopy
-
+from functools import lru_cache
+from supar.utils import common
 
 class RawField(object):
     """
@@ -226,6 +227,257 @@ class Field(RawField):
         if self.eos:
             sequences = [seq + [self.eos_index] for seq in sequences]
         sequences = [torch.tensor(seq) for seq in sequences]
+
+        return sequences
+
+    def compose(self, sequences):
+        """
+        Compose a batch of sequences into a padded tensor.
+
+        Args:
+            sequences (list[torch.torch.Tensor]):
+                A list of tensors.
+
+        Returns:
+            A padded tensor converted to proper device.
+        """
+
+        return pad(sequences, self.pad_index).to(self.device)
+
+
+class FeatureField(RawField):
+    """
+    Defines a datatype together with instructions for converting to Tensor.
+    Field class models common text processing datatypes that can be represented by tensors.
+    It holds a Vocab object that defines the set of possible values
+    for elements of the field and their corresponding numerical representations.
+    The Field object also holds other parameters relating to how a datatype
+    should be numericalized, such as a tokenization method.
+
+    Args:
+        name (str):
+            The name of the field.
+        pad_token (str):
+            The string token used as padding. Default: None.
+        unk_token (str):
+            The string token used to represent OOV words. Default: None.
+        bos_token (str):
+            A token that will be prepended to every example using this field, or None for no bos_token.
+            Default: None.
+        eos_token (str):
+            A token that will be appended to every example using this field, or None for no eos_token.
+        lower (bool):
+            Whether to lowercase the text in this field. Default: False.
+        use_vocab (bool):
+            Whether to use a Vocab object. If False, the data in this field should already be numerical.
+            Default: True.
+        tokenize (function):
+            The function used to tokenize strings using this field into sequential examples. Default: None.
+        fn (function):
+            The function used for preprocessing the examples. Default: None.
+    """
+
+    def __init__(self, name, pad=None, unk=None, bos=None, eos=None,
+                 digit_feature=True, hyphen_feature=True, capital_feature=True,
+                 ngram_feature=True, lower=False):
+        self.name = name
+        self.pad = pad
+        self.unk = unk
+        self.bos = bos
+        self.eos = eos
+        self.lower = lower
+        # TODO: make feature control functional
+        self._feature_cache = None
+
+        self.specials = [token for token in [pad, unk, bos, eos]
+                         if token is not None]
+
+    def __repr__(self):
+        s, params = f"({self.name}): {self.__class__.__name__}(", []
+        if self.pad is not None:
+            params.append(f"pad={self.pad}")
+        if self.unk is not None:
+            params.append(f"unk={self.unk}")
+        if self.bos is not None:
+            params.append(f"bos={self.bos}")
+        if self.eos is not None:
+            params.append(f"eos={self.eos}")
+        if self.lower:
+            params.append(f"lower={self.lower}")
+        if not self.use_vocab:
+            params.append(f"use_vocab={self.use_vocab}")
+        s += ", ".join(params)
+        s += ")"
+
+        return s
+
+    @property
+    def pad_index(self):
+        if self.pad is None:
+            return 0
+        if hasattr(self, 'vocab'):
+            return self.vocab[self.pad]
+        return self.specials.index(self.pad)
+
+    @property
+    def unk_index(self):
+        if self.unk is None:
+            return 0
+        if hasattr(self, 'vocab'):
+            return self.vocab[self.unk]
+        return self.specials.index(self.unk)
+
+    @property
+    def bos_index(self):
+        if hasattr(self, 'vocab'):
+            return self.vocab[self.bos]
+        return self.specials.index(self.bos)
+
+    @property
+    def eos_index(self):
+        if hasattr(self, 'vocab'):
+            return self.vocab[self.eos]
+        return self.specials.index(self.eos)
+
+    @property
+    def device(self):
+        return 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    def preprocess(self, sequence):
+        """
+        Load a single example using this field, tokenizing if necessary.
+        The sequence will be first passed to `self.fn` if available.
+        If `self.tokenize` is not None, the input will be tokenized.
+        Then the input will be optionally lowercased.
+
+        Args (list):
+            The sequence to be preprocessed.
+
+        Returns:
+            sequence (list):
+                the preprocessed sequence.
+        """
+
+        return sequence
+
+    @property
+    def features(self):
+        if self._feature_cache is None:
+            features = [k.split(",") for k in self.vocab.stoi.keys()]
+            word_feature, digit_feature, hyphen_feature, capital_feature, bigram_feature, trigram_feature = zip(*features)
+            def feature_to_tensor(feature):
+                return torch.tensor([int(i) for i in feature]).to(self.device)
+            word_feature    = feature_to_tensor(word_feature)
+            digit_feature   = feature_to_tensor(digit_feature)
+            hyphen_feature  = feature_to_tensor(hyphen_feature)
+            capital_feature = feature_to_tensor(capital_feature)
+            other_feature = torch.stack([digit_feature, hyphen_feature, capital_feature], dim=-1)
+            bigram_feature  = pad([torch.tensor([int(_f) for _f in f.split("-")])
+                                        for f in bigram_feature]).to(self.device)
+            trigram_feature  = pad([torch.tensor([int(_f) for _f in f.split("-")])
+                                        for f in trigram_feature]).to(self.device)
+            self._feature_cache = (word_feature, bigram_feature, trigram_feature, other_feature)
+        return self._feature_cache
+
+    @lru_cache(maxsize=None)
+    def feature_fn(self, token):
+        # digit_feature = str.isnumeric(token)
+        digit_feature = "1" if has_number(token) else "0"
+        hyphen_feature = "1" if "-" in token else "0"
+        capital_feature = "1" if str.isupper(token[0]) else "0"
+        if self.lower:
+            token = str.lower(token)
+        bigram_feature = "-".join([str(f) for f in sorted({self.bigram_vocab[(token + "$")[i:i+2]] for i in range(len(token))})[:20]])
+        trigram_feature = "-".join([str(f) for f in sorted({self.trigram_vocab[("^" + token + "$")[i:i+3]] for i in range(len(token))})[:20]])
+        word_feature =str(self.word_vocab[token])
+        return ",".join([word_feature, digit_feature, hyphen_feature, capital_feature, bigram_feature, trigram_feature])
+
+    def build(self, dataset, min_freq=1, embed=None, not_extend_vocab=False):
+        """
+        Construct the Vocab object for this field from the dataset.
+        If the Vocab has already existed, this function will have no effect.
+
+        Args:
+            dataset (Dataset):
+                A Dataset instance. One of the attributes should be named after the name of this field.
+            min_freq (int):
+                The minimum frequency needed to include a token in the vocabulary. Default: 1.
+            embed (Embedding):
+                An Embedding instance, words in which will be extended to the vocabulary. Default: None.
+        """
+
+        if hasattr(self, 'vocab'):
+            return
+        sequences = getattr(dataset, self.name)
+        preprocessed_seq = [self.preprocess(seq) for seq in sequences]
+        word_counter = Counter(token
+                          for seq in preprocessed_seq
+                          for token in seq)
+        self.word_vocab    = Vocab(word_counter, min_freq, [common.pad, common.unk], self.unk_index)
+        bigram_counter = Counter((token + "$")[i:i+2]
+                            for seq in preprocessed_seq
+                            for token in seq
+                            for i in range(len(token)))
+        self.bigram_vocab  = Vocab(bigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
+        trigram_counter = Counter(("^" + token + "$")[i:i+3]
+                             for seq in preprocessed_seq
+                             for token in seq
+                             for i in range(len(token)))
+        self.trigram_vocab = Vocab(trigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
+        counter = Counter(self.feature_fn(token) if self.feature_fn is not None else token
+                          for seq in preprocessed_seq
+                          for token in seq)
+        self.vocab = Vocab(counter, 0, self.specials, 1)
+
+        # clear up function cache
+        self.feature_fn.cache_clear()
+
+        # if not embed:
+        #     self.embed = None
+        # else:
+        #     tokens = self.preprocess(embed.tokens)
+        #     # if the `unk` token has existed in the pretrained,
+        #     # then replace it with a self-defined one
+        #     if embed.unk:
+        #         tokens[embed.unk_index] = self.unk
+
+        #     if not_extend_vocab:
+        #         old_vocab = deepcopy(self.vocab)
+
+        #     self.vocab.extend(tokens)
+        #     self.embed = torch.zeros(len(self.vocab), embed.dim)
+        #     self.embed[self.vocab[tokens]] = embed.vectors
+        #     if not_extend_vocab:
+        #         self.vocab = old_vocab
+        #         self.embed = self.embed[:len(self.vocab)]
+        #     self.embed /= torch.std(self.embed)
+
+    def transform(self, sequences):
+        """
+        Turns a list of sequences that use this field into tensors.
+
+        Each sequence is first preprocessed and then numericalized if needed.
+
+        Args:
+            sequences (list[list[str]]):
+                A list of sequences.
+
+        Returns:
+            sequences (list[torch.torch.Tensor]):
+                A list of tensors transformed from the input sequences.
+        """
+
+        # sequences = [self.preprocess(seq) for seq in sequences]
+        sequences = [self.vocab[[self.feature_fn(token) 
+                        if self.feature_fn is not None else token 
+                        for token in seq]] for seq in sequences]
+        if self.bos:
+            sequences = [[self.bos_index] + seq for seq in sequences]
+        if self.eos:
+            sequences = [seq + [self.eos_index] for seq in sequences]
+        sequences = [torch.tensor(seq) for seq in sequences]
+
+        self.feature_fn.cache_clear()
 
         return sequences
 

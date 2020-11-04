@@ -38,9 +38,8 @@ def tohalfwidth(token):
 @lru_cache(maxsize=1024)
 def has_number(token):
     has_num = False
-    num_set = set(range(10))
     for char in token:
-        if char in num_set:
+        if isdigit(char):
             has_num = True
             break
     return has_num

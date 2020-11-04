@@ -8,7 +8,7 @@ from supar.models import POSModel
 from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
 from supar.utils.common import bos, pad, unk
-from supar.utils.field import Field, SubwordField
+from supar.utils.field import Field, SubwordField, FeatureField
 from supar.utils.fn import ispunct, heatmap
 from supar.utils.logging import get_logger, progress_bar
 from supar.utils.metric import ManyToOneAccuracy
@@ -126,7 +126,7 @@ class HMMPOSTagger(Parser):
             mask = words.ne(self.WORD.pad_index)
             # ignore the first token of each sentence
 
-            emit_probs, trans_probs = self.model(words, mask)
+            emit_probs, trans_probs = self.model(words, self.WORD.features, mask)
 
             if self.args.em_alg:
                 logP = self.model.baum_welch(words, mask, emit_probs, trans_probs)
@@ -151,7 +151,7 @@ class HMMPOSTagger(Parser):
 
         for words, tags in loader:
             mask = words.ne(self.WORD.pad_index)
-            emit_probs, trans_probs = self.model(words, mask)
+            emit_probs, trans_probs = self.model(words, self.WORD.features, mask)
             total_logP += self.model.get_logP(emit_probs, trans_probs, mask).sum()
             tag_preds = self.model.decode(emit_probs, trans_probs, mask).to(tags)
             metric(tag_preds, tags, mask)
@@ -168,7 +168,7 @@ class HMMPOSTagger(Parser):
         for words, in progress_bar(loader):
             mask = words.ne(self.WORD.pad_index)
             lens = mask.sum(1).tolist()
-            emit_probs, trans_probs = self.model(words, mask)
+            emit_probs, trans_probs = self.model(words, self.WORD.features, mask)
             tag_preds = self.model.decode(emit_probs, trans_probs, mask)
             tags.extend(tag_preds[mask].split(lens))
 
@@ -208,16 +208,19 @@ class HMMPOSTagger(Parser):
             return parser
 
         logger.info("Build the fields")
-        WORD = Field('words', pad=pad, unk=unk, lower=True)
+        WORD = FeatureField('words', pad="0,0,0,0,0,0", unk="1,0,0,0,1,1", lower=True)
         CPOS = Field('tags')
         transform = CoNLL(FORM=WORD, CPOS=CPOS)
 
         train = Dataset(transform, args.train)
-        WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None), not_extend_vocab=True)
-        # WORD.build(train, args.min_freq)
+        # WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None), not_extend_vocab=True)
+        WORD.build(train, args.min_freq)
         CPOS.build(train)
         args.update({
-            'n_words': len(WORD.vocab),
+            'n_features': len(WORD.vocab),
+            'n_words':    len(WORD.word_vocab),
+            'n_bigrams':  len(WORD.bigram_vocab),
+            'n_trigrams': len(WORD.trigram_vocab),
             'n_cpos':  len(CPOS.vocab),
             'pad_index': WORD.pad_index,
             'unk_index': WORD.unk_index,

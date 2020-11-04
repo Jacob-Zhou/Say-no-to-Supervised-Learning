@@ -36,6 +36,7 @@ class Parser(object):
               mu=.9,
               nu=.9,
               epsilon=1e-12,
+              weight_decay=0,
               clip=5.0,
               decay=.75,
               decay_steps=5000,
@@ -66,7 +67,7 @@ class Parser(object):
                                 args.lr,
                                 (args.mu, args.nu),
                                 args.epsilon,
-                                weight_decay=1e-5)
+                                weight_decay=args.weight_decay)
             self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
             logger.info(f"{self.optimizer}\n")
 
