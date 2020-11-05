@@ -363,20 +363,15 @@ class FeatureField(RawField):
     @property
     def features(self):
         if self._feature_cache is None:
-            features = [k.split(",") for k in self.vocab.stoi.keys()]
-            word_feature, digit_feature, hyphen_feature, capital_feature, bigram_feature, trigram_feature = zip(*features)
             def feature_to_tensor(feature):
                 return torch.tensor([int(i) for i in feature]).to(self.device)
-            word_feature    = feature_to_tensor(word_feature)
-            digit_feature   = feature_to_tensor(digit_feature)
-            hyphen_feature  = feature_to_tensor(hyphen_feature)
-            capital_feature = feature_to_tensor(capital_feature)
+            features = [k.split(",") for k in self.vocab.stoi.keys()]
+            (word_feature, 
+                digit_feature, hyphen_feature, capital_feature, 
+                suffix_unigram_feature, suffix_bigram_feature, suffix_trigram_feature) = map(feature_to_tensor, zip(*features))
             other_feature = torch.stack([digit_feature, hyphen_feature, capital_feature], dim=-1)
-            bigram_feature  = pad([torch.tensor([int(_f) for _f in f.split("-")])
-                                        for f in bigram_feature]).to(self.device)
-            trigram_feature  = pad([torch.tensor([int(_f) for _f in f.split("-")])
-                                        for f in trigram_feature]).to(self.device)
-            self._feature_cache = (word_feature, bigram_feature, trigram_feature, other_feature)
+            self._feature_cache = (word_feature, suffix_unigram_feature, suffix_bigram_feature, 
+                                        suffix_trigram_feature, other_feature)
         return self._feature_cache
 
     @lru_cache(maxsize=None)
@@ -387,10 +382,13 @@ class FeatureField(RawField):
         capital_feature = "1" if str.isupper(token[0]) else "0"
         if self.lower:
             token = str.lower(token)
-        bigram_feature = "-".join([str(f) for f in sorted({self.bigram_vocab[(token + "$")[i:i+2]] for i in range(len(token))})[:20]])
-        trigram_feature = "-".join([str(f) for f in sorted({self.trigram_vocab[("^" + token + "$")[i:i+3]] for i in range(len(token))})[:20]])
-        word_feature =str(self.word_vocab[token])
-        return ",".join([word_feature, digit_feature, hyphen_feature, capital_feature, bigram_feature, trigram_feature])
+        word_feature = str(self.word_vocab[token])
+        suffix_unigram_feature = str(self.suffix_unigram_vocab[token[-1]])
+        suffix_bigram_feature  = str(self.suffix_bigram_vocab[token[-2:]])
+        suffix_trigram_feature = str(self.suffix_trigram_vocab[token[-3:]])
+        return ",".join([word_feature, digit_feature, 
+                            hyphen_feature, capital_feature, 
+                            suffix_unigram_feature, suffix_bigram_feature, suffix_trigram_feature])
 
     def build(self, dataset, min_freq=1, embed=None, not_extend_vocab=False):
         """
@@ -410,20 +408,22 @@ class FeatureField(RawField):
             return
         sequences = getattr(dataset, self.name)
         preprocessed_seq = [self.preprocess(seq) for seq in sequences]
-        word_counter = Counter(token
+        word_counter = Counter(str.lower(token) if self.lower else token
                           for seq in preprocessed_seq
                           for token in seq)
         self.word_vocab    = Vocab(word_counter, min_freq, [common.pad, common.unk], self.unk_index)
-        bigram_counter = Counter((token + "$")[i:i+2]
+        suffix_unigram_counter = Counter(token[-1]
                             for seq in preprocessed_seq
-                            for token in seq
-                            for i in range(len(token)))
-        self.bigram_vocab  = Vocab(bigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
-        trigram_counter = Counter(("^" + token + "$")[i:i+3]
+                            for token in seq)
+        self.suffix_unigram_vocab  = Vocab(suffix_unigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
+        suffix_bigram_counter = Counter(token[-2:]
+                            for seq in preprocessed_seq
+                            for token in seq if len(token) >= 2)
+        self.suffix_bigram_vocab  = Vocab(suffix_bigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
+        suffix_trigram_counter = Counter(token[-3:]
                              for seq in preprocessed_seq
-                             for token in seq
-                             for i in range(len(token)))
-        self.trigram_vocab = Vocab(trigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
+                             for token in seq if len(token) >= 3)
+        self.suffix_trigram_vocab = Vocab(suffix_trigram_counter, min_freq, [common.pad, common.unk], self.unk_index)
         counter = Counter(self.feature_fn(token) if self.feature_fn is not None else token
                           for seq in preprocessed_seq
                           for token in seq)
@@ -431,6 +431,7 @@ class FeatureField(RawField):
 
         # clear up function cache
         self.feature_fn.cache_clear()
+        self.features
 
         # if not embed:
         #     self.embed = None

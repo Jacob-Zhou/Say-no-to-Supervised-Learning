@@ -208,7 +208,7 @@ class HMMPOSTagger(Parser):
             return parser
 
         logger.info("Build the fields")
-        WORD = FeatureField('words', pad="0,0,0,0,0,0", unk="1,0,0,0,1,1", lower=True)
+        WORD = FeatureField('words', pad="0,0,0,0,0,0,0", unk="1,0,0,0,1,1,1", lower=True)
         CPOS = Field('tags')
         transform = CoNLL(FORM=WORD, CPOS=CPOS)
 
@@ -217,11 +217,12 @@ class HMMPOSTagger(Parser):
         WORD.build(train, args.min_freq)
         CPOS.build(train)
         args.update({
-            'n_features': len(WORD.vocab),
-            'n_words':    len(WORD.word_vocab),
-            'n_bigrams':  len(WORD.bigram_vocab),
-            'n_trigrams': len(WORD.trigram_vocab),
-            'n_cpos':  len(CPOS.vocab),
+            'n_features': WORD.vocab.n_init,
+            'n_words':    WORD.word_vocab.n_init,
+            'n_suffix_unigrams': WORD.suffix_unigram_vocab.n_init,
+            'n_suffix_bigrams':  WORD.suffix_bigram_vocab.n_init,
+            'n_suffix_trigrams': WORD.suffix_trigram_vocab.n_init,
+            'n_cpos': CPOS.vocab.n_init,
             'pad_index': WORD.pad_index,
             'unk_index': WORD.unk_index,
         })

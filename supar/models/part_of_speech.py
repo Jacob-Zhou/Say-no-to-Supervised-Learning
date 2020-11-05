@@ -76,8 +76,9 @@ class POSModel(nn.Module):
 
     def __init__(self,
                  n_words,
-                 n_bigrams,
-                 n_trigrams,
+                 n_suffix_unigrams,
+                 n_suffix_bigrams,
+                 n_suffix_trigrams,
                  n_cpos,
                  normalize_paras=False,
                  **kwargs):
@@ -87,8 +88,9 @@ class POSModel(nn.Module):
         # the embedding layer
         # emit prob
         self.word_weight    = nn.Parameter(torch.ones(n_words, n_cpos))
-        self.bigram_weight  = nn.Parameter(torch.ones(n_bigrams, n_cpos))
-        self.trigram_weight = nn.Parameter(torch.ones(n_trigrams, n_cpos))
+        self.suffix_unigram_weight  = nn.Parameter(torch.ones(n_suffix_unigrams, n_cpos))
+        self.suffix_bigram_weight  = nn.Parameter(torch.ones(n_suffix_bigrams, n_cpos))
+        self.suffix_trigram_weight = nn.Parameter(torch.ones(n_suffix_trigrams, n_cpos))
         self.other_weight   = nn.Parameter(torch.ones(3, n_cpos))
 
         # transfer prob
@@ -98,8 +100,9 @@ class POSModel(nn.Module):
 
         self._params = nn.ParameterDict({
                 'word_weight':    self.word_weight,
-                'bigram_weight':  self.bigram_weight,
-                'trigram_weight': self.trigram_weight,
+                'suffix_unigram_weight': self.suffix_unigram_weight,
+                'suffix_bigram_weight':  self.suffix_bigram_weight,
+                'suffix_trigram_weight': self.suffix_trigram_weight,
                 'other_weight':   self.other_weight,
                 'T':              self.T,
                 'start':          self.start,
@@ -124,8 +127,9 @@ class POSModel(nn.Module):
             self.end.data      = self.end.data.log_softmax(-1)
         else:
             nn.init.normal_(self.word_weight.data, 0, 3/(25.**0.5))
-            nn.init.normal_(self.bigram_weight.data, 0, 3/(25.**0.5))
-            nn.init.normal_(self.trigram_weight.data, 0, 3/(25.**0.5))
+            nn.init.normal_(self.suffix_unigram_weight.data, 0, 3/(25.**0.5))
+            nn.init.normal_(self.suffix_bigram_weight.data, 0, 3/(25.**0.5))
+            nn.init.normal_(self.suffix_trigram_weight.data, 0, 3/(25.**0.5))
             nn.init.normal_(self.other_weight.data, 0, 3/(25.**0.5))
             nn.init.normal_(self.T.data, 0, 3)
             nn.init.normal_(self.start.data, 0, 3)
@@ -156,26 +160,25 @@ class POSModel(nn.Module):
                 The scores of all possible labels on each arc.
         """
         # [n_features, n_cpos]
-        word_feature, bigram_feature, trigram_feature, other_feature = features
+        (word_feature, 
+            suffix_unigram_feature, suffix_bigram_feature, 
+            suffix_trigram_feature, other_feature) = features
         # [n_features] -> [n_features, n_cpos]
         word_scores    = nn.functional.embedding(word_feature, self.word_weight)
-        # [n_features, n_ngram] -> [n_features, n_ngram, n_cpos]
-        bigram_scores  = nn.functional.embedding(bigram_feature, self.bigram_weight)
-        bigram_scores[bigram_feature == 0] = 0
-        bigram_scores = bigram_scores.sum(1)
-        # [n_features, n_ngram] -> [n_features, n_ngram, n_cpos] -> [n_features, n_cpos]
-        trigram_scores = nn.functional.embedding(trigram_feature, self.trigram_weight)
-        trigram_scores[trigram_scores == 0] = 0
-        trigram_scores = trigram_scores.sum(1)
+        unigram_scores = nn.functional.embedding(suffix_unigram_feature, self.suffix_unigram_weight)
+        bigram_scores  = nn.functional.embedding(suffix_bigram_feature, self.suffix_bigram_weight)
+        trigram_scores = nn.functional.embedding(suffix_trigram_feature, self.suffix_trigram_weight)
         # [n_features, 3] @ [3, n_cpos] -> [n_features, n_cpos]
-        other_scores   = other_feature.float() @ self.other_weight
-        emit_probs = (word_scores + bigram_scores + trigram_scores + other_scores).log_softmax(0)
+        other_feature = other_feature.float()
+        other_scores  = other_feature @ self.other_weight
+        # feature_count = other_feature.sum(-1) + 4.
+        emit_probs = (word_scores + unigram_scores + bigram_scores + trigram_scores + other_scores).log_softmax(0)
         # [batch_size, seq_len, n_cpos]
         emit_probs = nn.functional.embedding(words, emit_probs)
         emit_probs[~mask] = float('-inf')
         return emit_probs, self.T.log_softmax(-1) if self.args.normalize_paras else self.T
 
-    @no_grad
+    @no_grad()
     def baum_welch(self, words, mask, emit_probs, trans_probs):
         gamma, xi, logP = self._e_step(emit_probs, trans_probs, mask)
         self._m_step(words, mask, gamma, xi)
@@ -209,7 +212,7 @@ class POSModel(nn.Module):
 
         return logP
 
-    @no_grad
+    @no_grad()
     def _forward(self, emit_probs, trans_probs, mask, forward=True):
         # the end position of each sentence in a batch
         lens = mask.sum(-1)
@@ -251,7 +254,7 @@ class POSModel(nn.Module):
 
         return alphabeta, logP
 
-    @no_grad
+    @no_grad()
     def decode(self, emit_probs, trans_probs, mask):
         lens = mask.sum(-1)
         mask = mask.t()
@@ -286,7 +289,7 @@ class POSModel(nn.Module):
 
         return pad_sequence(sequences, batch_first=True)
 
-    @no_grad
+    @no_grad()
     def _e_step(self, emit_probs, trans_probs, mask):
         """
         Args:
@@ -329,7 +332,7 @@ class POSModel(nn.Module):
 
         return gamma, xi, (logP_b+logP_f)/2
 
-    @no_grad
+    @no_grad()
     def _m_step(self, words, mask, gamma, xi):
         # gamma:         [batch_size, seq_len, n_cpos]
         # xi:            [batch_size, seq_len-1, n_cpos_t, n_cpos_t+1]
@@ -355,7 +358,7 @@ class POSModel(nn.Module):
         self.xi_sum     = 0
         self.total_sent = 0
 
-    @no_grad
+    @no_grad()
     def step(self):
         self.E.data     = (self.emit_sum / self.gamma_sum).log().float()
         self.start.data = (self.start_sum / self.total_sent).log().float()
