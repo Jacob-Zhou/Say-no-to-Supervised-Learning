@@ -130,6 +130,7 @@ class HMMPOSTagger(Parser):
 
             if self.args.em_alg:
                 logP = self.model.baum_welch(words, mask, emit_probs, trans_probs)
+                bar.set_postfix_str(f" logP: {logP.mean():.4f}")
             else:
                 self.optimizer.zero_grad()
                 logP = self.model.get_logP(emit_probs, trans_probs, mask)
@@ -138,7 +139,7 @@ class HMMPOSTagger(Parser):
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
                 self.optimizer.step()
                 self.scheduler.step()
-            bar.set_postfix_str(f" logP: {logP.mean():.4f}")
+                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, logP: {logP.mean():.4f}")
 
         if self.args.em_alg:
             self.model.step()
