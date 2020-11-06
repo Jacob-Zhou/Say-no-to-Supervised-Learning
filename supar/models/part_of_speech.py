@@ -278,9 +278,9 @@ class POSModel(nn.Module):
         """
         batch_size, seq_len, n_cpos = emit_probs.shape
         alpha, logP_f = self._forward(emit_probs, trans_probs, mask)
-        beta, logP_b  = self._forward(emit_probs, trans_probs, mask, forward=False)
+        beta,  logP_b = self._forward(emit_probs, trans_probs, mask, forward=False)
 
-        # gamma: [batch_size, seq_len, n_cpos]
+        # gamma: [batch_size, seq_len, n_cpos]. aka. posterior probability.
         gamma = (alpha + beta).softmax(-1)
         gamma.masked_fill_(torch.isnan(gamma), 0)
 
