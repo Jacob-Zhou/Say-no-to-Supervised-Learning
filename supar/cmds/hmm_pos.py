@@ -35,6 +35,17 @@ def main():
                            help='dimension of embeddings')
     subparser.add_argument('--bert', default='bert-base-cased',
                            help='which bert model to use')
+
+    subparser = subparsers.add_parser('finetune', help='Finetune a parser.')
+    subparser.add_argument('--max-len', default=None, type=int,
+                           help='max length of the sentences')
+    subparser.add_argument('--buckets', default=32, type=int,
+                           help='max num of buckets to use')
+    subparser.add_argument('--train', default='data/ptb/total.conllx',
+                           help='path to train file')
+    subparser.add_argument('--dev', default='data/ptb/total.conllx',
+                           help='path to dev file')
+
     # evaluate
     subparser = subparsers.add_parser('evaluate', help='Evaluate the specified parser and dataset.')
     subparser.add_argument('--punct', action='store_true',

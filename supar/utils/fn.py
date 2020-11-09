@@ -119,3 +119,24 @@ def heatmap(corr, labels=None, name='matrix'):
                 cbar=False)
     plt.savefig(f'{name}.png')
     plt.close()
+
+def heatmap_trans(corr, labels=None, name='matrix'):
+    sns.set(style="white")
+
+    shape = corr.t().shape
+    assert len(shape) == 2
+    shape = (shape[0], shape[1])
+
+    # Set up the matplotlib figure
+    f, ax = plt.subplots(figsize=shape)
+
+    cmap = "RdBu"
+
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(corr / (corr.sum(0)[None, :] + 1e-6), cmap=cmap, center=0, ax=ax,
+                square=True, linewidths=.5,
+                xticklabels=False if labels is None else labels,
+                yticklabels=False if labels is None else labels,
+                cbar=False)
+    plt.savefig(f'{name}.png')
+    plt.close()

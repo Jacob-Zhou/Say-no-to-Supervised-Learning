@@ -12,7 +12,7 @@ from supar.utils.logging import init_logger, logger
 from supar.utils.metric import Metric
 from supar.utils.parallel import DistributedDataParallel as DDP
 from supar.utils.parallel import is_master
-from supar.utils.fn import heatmap
+from supar.utils.fn import heatmap, heatmap_trans
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR
 from collections import Counter
@@ -135,8 +135,8 @@ class Parser(object):
         unrecalled_tag_map = {g:tag_map[gold_tag_map[g]] for g in self.CPOS.vocab.stoi}
         unrecalled_tag_map = {k: v for k, v in unrecalled_tag_map.items() if k != v}
         pprint(unrecalled_tag_map)
-        # heatmap(metric.clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.evaluate.clusters")
-        heatmap(self.model.T.softmax(-1).detach().cpu(), [f"#C{n}#" for n in range(len(self.CPOS.vocab))], f"{args.path}.T.clusters")
+        heatmap(metric.clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.evaluate.clusters")
+        heatmap_trans(self.model.T.softmax(-1).detach().cpu(), [f"#C{n}#" for n in range(len(self.CPOS.vocab))], f"{args.path}.T.clusters")
         logger.info(f"{elapsed}s elapsed, {len(dataset)/elapsed.total_seconds():.2f} Sents/s")
 
         return loss, metric
