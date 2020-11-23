@@ -2,7 +2,7 @@
 
 from .parsers import (BiaffineDependencyParser, CRF2oDependencyParser,
                       CRFConstituencyParser, CRFDependencyParser,
-                      CRFNPDependencyParser, HMMPOSTagger,
+                      CRFNPDependencyParser, HMMPOSTagger, VAEPOSTagger,
                       Parser)
 
 __all__ = ['Parser',
@@ -11,7 +11,8 @@ __all__ = ['Parser',
            'CRFDependencyParser',
            'CRF2oDependencyParser',
            'CRFConstituencyParser',
-           'HMMPOSTagger']
+           'HMMPOSTagger',
+           'VAEPOSTagger']
 __version__ = '0.0.1'
 
 PARSER = {parser.NAME: parser for parser in [BiaffineDependencyParser,
@@ -19,7 +20,8 @@ PARSER = {parser.NAME: parser for parser in [BiaffineDependencyParser,
                                              CRFDependencyParser,
                                              CRF2oDependencyParser,
                                              CRFConstituencyParser,
-                                             HMMPOSTagger]}
+                                             HMMPOSTagger,
+                                             VAEPOSTagger]}
 
 PRETRAINED = {
     'biaffine-dep-en': 'https://github.com/yzhangcs/supar/releases/download/v0.1.0/ptb.biaffine.dependency.char.zip',

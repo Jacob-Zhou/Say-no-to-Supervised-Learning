@@ -6,6 +6,7 @@ from .crf_constituency import CRFConstituencyParser
 from .crf_dependency import CRFDependencyParser
 from .crfnp_dependency import CRFNPDependencyParser
 from .hmm_pos import HMMPOSTagger
+from .vae_pos import VAEPOSTagger
 from .parser import Parser
 
 __all__ = ['BiaffineDependencyParser',
@@ -14,4 +15,5 @@ __all__ = ['BiaffineDependencyParser',
            'CRFDependencyParser',
            'CRFNPDependencyParser',
            'HMMPOSTagger',
+           'VAEPOSTagger',
            'Parser']
