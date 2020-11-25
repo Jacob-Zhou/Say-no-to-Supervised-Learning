@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from supar.modules import (MLP, BertEmbedding, Biaffine, BiLSTM, CharLSTM,
+from supar.modules import (MLP, BertEmbedding, Biaffine, CharLSTM,
                            Triaffine)
 from supar.modules.dropout import IndependentDropout, SharedDropout
 from supar.modules.treecrf import CRF2oDependency, CRFDependency, MatrixTree
@@ -11,7 +11,7 @@ from supar.utils.alg import eisner, eisner2o, mst, kmeans
 from supar.utils.transform import CoNLL
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
 from torch.nn.functional import one_hot
-from supar.utils.fn import heatmap
+from supar.utils.fn import heatmap, reverse_padded_sequence
 
 class POSModel(nn.Module):
     """
@@ -337,30 +337,27 @@ class VAEPOSModel(nn.Module):
         self.embed_dropout = IndependentDropout(p=embed_dropout)
 
         # the lstm layer
-        self.lstm = BiLSTM(input_size=n_embed+n_feat_embed,
+        self.lstm_f = nn.LSTM(input_size=n_embed+n_feat_embed,
+                           hidden_size=n_lstm_hidden,
+                           num_layers=n_lstm_layers,
+                           dropout=lstm_dropout)
+        self.lstm_b = nn.LSTM(input_size=n_embed+n_feat_embed,
                            hidden_size=n_lstm_hidden,
                            num_layers=n_lstm_layers,
                            dropout=lstm_dropout)
         self.lstm_dropout = SharedDropout(p=lstm_dropout)
 
         self.fc_pos = nn.Linear(n_lstm_hidden*2, n_cpos)
+        self.layer_norm = nn.LayerNorm(n_cpos)
 
         self.generator = nn.Parameter(torch.ones(n_tgt_words, n_cpos))
-        self.trans = nn.Parameter(torch.zeros(n_cpos, n_cpos))
-        self.start = nn.Parameter(torch.zeros(n_cpos))
-        self.end = nn.Parameter(torch.zeros(n_cpos))
 
-        self.criterion = nn.CrossEntropyLoss()
         self.pad_index = pad_index
         self.unk_index = unk_index
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.normal_(self.fc_pos.weight.data, 0, 3/25**.5)
-        nn.init.normal_(self.generator.data,     0, 3/25**.5)
-        nn.init.normal_(self.trans.data, 0, 3/25**.5)
-        nn.init.normal_(self.start.data, 0, 3/25**.5)
-        nn.init.normal_(self.end.data, 0, 3/25**.5)
+        nn.init.normal_(self.generator.data, 0, 1)
 
     def load_pretrained(self, embed=None):
         if embed is not None:
@@ -402,13 +399,23 @@ class VAEPOSModel(nn.Module):
         # concatenate the word and feat representations
         embed = torch.cat((word_embed, feat_embed), -1)
 
-        x = pack_padded_sequence(embed, mask.sum(1), True, False)
-        x, _ = self.lstm(x)
-        x, _ = pad_packed_sequence(x, True, total_length=seq_len)
-        x = self.lstm_dropout(x)
+        x_f = pack_padded_sequence(embed, mask.sum(1), True, False)
+        x_f, _ = self.lstm_f(x_f)
+        x_f, _ = pad_packed_sequence(x_f, True, total_length=seq_len)
+        x_f = self.lstm_dropout(x_f)
 
+        x_b = reverse_padded_sequence(embed, mask.sum(1), True)
+        x_b = pack_padded_sequence(x_b, mask.sum(1), True, False)
+        x_b, _ = self.lstm_b(x_b)
+        x_b, _ = pad_packed_sequence(x_b, True, total_length=seq_len)
+        x_b = reverse_padded_sequence(x_b, mask.sum(1), True)
+        x_b = self.lstm_dropout(x_b)
+
+        x = torch.cat([x_f[:, :-2], x_b[:, 2:]], dim=-1)
+        # x = x[:, :-2]
         # apply MLPs to the BiLSTM output states
         s_tag = self.fc_pos(x)
+        s_tag = self.layer_norm(s_tag)
 
         return s_tag
 
@@ -456,43 +463,14 @@ class VAEPOSModel(nn.Module):
 
         return alphabeta, logP
 
-    def decode(self, emit_probs, mask):
-        lens = mask.sum(-1)
-        mask = mask.t()
-        batch_size, seq_len, n_cpos = emit_probs.shape
-        p     = emit_probs.new_zeros(seq_len, batch_size, n_cpos).long()
-        alpha = emit_probs.new_zeros(batch_size, n_cpos)
-        trans_probs = self.trans.log_softmax(-1)
-        start_probs = self.start.log_softmax(-1)
-        end_probs   = self.end.log_softmax(-1)
-        alpha[:] = start_probs.unsqueeze(0) + emit_probs[:, 0]
+    def decode(self, s_tag, words, mask):
+        log_emit_probs = self.generator.log_softmax(0)
+        # [batch_size, seq_len, n_cpos]
+        log_emit_probs = nn.functional.embedding(words, log_emit_probs)
+        log_tag_probs = s_tag.log_softmax(-1)
+        return (log_tag_probs + log_emit_probs).argmax(-1)
 
-        for i in range(1, seq_len):
-            # [batch_size, n_labels_pre, 1] + [batch_size, n_labels_pre, n_label_now]
-            _s = alpha.unsqueeze(-1) + \
-                    emit_probs[:, i].unsqueeze(1) + \
-                    trans_probs
-            _s, _p = _s.max(1)
-            alpha[mask[i]] = _s[mask[i]]
-            p[i, mask[i]] = _p[mask[i]]
-        _, p_end = (alpha + end_probs).max(1)
-
-        def backtrack(path, l, now_label):
-            labels = [now_label]
-            for i in range(l, 0, -1):
-                this = path[i][now_label]
-                labels.append(this)
-                now_label = this
-            return emit_probs.new_tensor(list(reversed(labels)), dtype=torch.long)
-
-        p = p.permute(1, 0, 2).tolist()
-        p_end = p_end.tolist()
-        sequences = [backtrack(p[i], length-1, p_end[i])
-                for i, length in enumerate(lens.tolist())]
-
-        return pad_sequence(sequences, batch_first=True)
-
-    def loss(self, s_tag, words):
+    def loss(self, s_tag, words, tags, mask):
         """
         Args:
             s_tag (torch.Tensor): [batch_size, seq_len, n_cpos]
@@ -505,19 +483,14 @@ class VAEPOSModel(nn.Module):
             loss (torch.Tensor): scalar
                 The training loss.
         """
-        mask = words.ne(self.pad_index)
+        # if self.training:
+        #     return nn.functional.cross_entropy(s_tag[mask], tags[mask])
+        # else:
         log_emit_probs = self.generator.log_softmax(0)
         # [batch_size, seq_len, n_cpos]
-        log_emit_probs = nn.functional.embedding(words, log_emit_probs).double()
+        log_emit_probs = nn.functional.embedding(words, log_emit_probs)
         log_emit_probs[~mask] = 0
-        alpha, logP_f = self._forward(s_tag.log_softmax(-1), mask)
-        beta,  logP_b = self._forward(s_tag.log_softmax(-1), mask, forward=False)
-        alpha = alpha.masked_fill(~mask.unsqueeze(-1), 0)
-        beta  = beta.masked_fill(~mask.unsqueeze(-1), 0)
         # gamma: [batch_size, seq_len, n_cpos]. aka. posterior probability.
-        tag_probs = (alpha + beta).softmax(-1).masked_fill(~mask.unsqueeze(-1), 0)
-        log_tag_probs = (alpha + beta).log_softmax(-1).masked_fill(~mask.unsqueeze(-1), 0)
-        expect = -torch.einsum("bst,bst->bs", tag_probs, log_emit_probs).float()
-        ent = .5 * (tag_probs * log_tag_probs).sum(-1)
-        # return expect.mean() + ent.mean() - (logP_f + logP_b).mean()
-        return expect.mean() + ent.mean()
+        log_tag_probs = s_tag.log_softmax(-1).masked_fill(~mask.unsqueeze(-1), 0)
+        expect = -(log_tag_probs + log_emit_probs).logsumexp(-1).sum(-1)
+        return expect.mean()

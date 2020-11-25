@@ -7,7 +7,7 @@ import torch.nn as nn
 from supar.models import VAEPOSModel
 from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
-from supar.utils.common import bos, pad, unk
+from supar.utils.common import bos, eos, pad, unk
 from supar.utils.field import Field, SubwordField
 from supar.utils.fn import ispunct, heatmap
 from supar.utils.logging import get_logger, progress_bar
@@ -120,12 +120,12 @@ class VAEPOSTagger(Parser):
 
         bar = progress_bar(loader)
         with torch.autograd.set_detect_anomaly(True):
-            for words, feats, tgt_words, _ in bar:
+            for words, feats, tgt_words, tags in bar:
                 self.optimizer.zero_grad()
-                mask = words.ne(self.WORD.pad_index)
+                mask = words.ne(self.WORD.pad_index)[:, 2:]
                 # ignore the first token of each sentence
                 s_tag = self.model(words, feats)
-                loss = self.model.loss(s_tag, tgt_words)
+                loss = self.model.loss(s_tag, tgt_words, tags, mask)
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
                 self.optimizer.step()
@@ -139,10 +139,10 @@ class VAEPOSTagger(Parser):
         total_loss, metric = 0, ManyToOneAccuracy(n_clusters=self.args.n_cpos, n_cpos=self.args.n_cpos)
 
         for words, feats, tgt_words, tags in loader:
-            mask = words.ne(self.WORD.pad_index)
+            mask = words.ne(self.WORD.pad_index)[:, 2:]
             s_tag = self.model(words, feats)
-            total_loss += self.model.loss(s_tag, tgt_words)
-            tag_preds = self.model.decode(s_tag.log_softmax(-1), mask)
+            total_loss += self.model.loss(s_tag, tgt_words, tags, mask)
+            tag_preds = self.model.decode(s_tag, tgt_words, mask)
             metric(tag_preds, tags, mask)
         total_loss /= len(loader)
 
@@ -154,11 +154,11 @@ class VAEPOSTagger(Parser):
 
         preds = {}
         tags = []
-        for words, in progress_bar(loader):
+        for words, feats, _ in progress_bar(loader):
             mask = words.ne(self.WORD.pad_index)
             lens = mask.sum(1).tolist()
-            emit_probs, trans_probs = self.model(words, mask)
-            tag_preds = self.model.decode(emit_probs, mask)
+            s_tag = self.model(words, feats)
+            tag_preds = self.model.decode(s_tag, words, mask)
             tags.extend(tag_preds[mask].split(lens))
 
         tags = [[f"#C{t}#" for t in seq.tolist()] for seq in tags]
@@ -166,8 +166,9 @@ class VAEPOSTagger(Parser):
 
         return preds
 
+
     @classmethod
-    def build(cls, path, min_freq=2, fix_len=20, **kwargs):
+    def build(cls, path, min_freq=2, tgt_min_freq=0, fix_len=20, **kwargs):
         """
         Build a brand-new Parser, including initialization of all data fields and model parameters.
 
@@ -197,11 +198,11 @@ class VAEPOSTagger(Parser):
             return parser
 
         logger.info("Build the fields")
-        WORD = Field('words', pad=pad, unk=unk, lower=True)
-        TGT_WORD = Field('words', pad=pad, unk=unk)
+        WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
+        TGT_WORD = Field('words')
         CPOS = Field('tags')
         if args.feat == 'char':
-            FEAT = SubwordField('chars', pad=pad, unk=unk, fix_len=args.fix_len)
+            FEAT = SubwordField('chars', pad=pad, unk=unk, bos=bos, eos=eos, fix_len=args.fix_len)
         elif args.feat == 'bert':
             from transformers import AutoTokenizer
             tokenizer = AutoTokenizer.from_pretrained(args.bert)
@@ -209,6 +210,7 @@ class VAEPOSTagger(Parser):
                                 pad=tokenizer.pad_token,
                                 unk=tokenizer.unk_token,
                                 bos=tokenizer.bos_token or tokenizer.cls_token,
+                                eos=tokenizer.eos_token or tokenizer.sep_token,
                                 fix_len=args.fix_len,
                                 tokenize=tokenizer.tokenize)
             FEAT.vocab = tokenizer.get_vocab()
@@ -218,7 +220,7 @@ class VAEPOSTagger(Parser):
 
         train = Dataset(transform, args.train)
         WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
-        TGT_WORD.build(train, 0)
+        TGT_WORD.build(train, args.tgt_min_freq)
         FEAT.build(train)
         CPOS.build(train)
         args.update({

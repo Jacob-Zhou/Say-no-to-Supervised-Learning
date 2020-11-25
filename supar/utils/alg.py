@@ -4,26 +4,22 @@ import torch
 from supar.utils.fn import pad, stripe
 
 
-def kmeans(x, k, max_it=32, dist_lambda=None):
-    """
+def kmeans(x, k, max_it=32):
+    r"""
     KMeans algorithm for clustering the sentences by length.
-
     Args:
         x (list[int]):
-            Lengths of sentences.
+            The list of sentence lengths.
         k (int):
-            Number of clusters.
-            This is an approximate value. The final number of clusters can be less or equal to k.
+            The number of clusters.
+            This is an approximate value. The final number of clusters can be less or equal to `k`.
         max_it (int):
             Maximum number of iterations.
             If centroids does not converge after several iterations, the algorithm will be early stopped.
-
     Returns:
-        centroids (list[float]):
-            Average lengths of sentences in each cluster.
-        clusters (list[list[int]]):
-            List of clusters that hold indices of data points.
-
+        list[float], list[list[int]]:
+            The first list contains average lengths of sentences in each cluster.
+            The second is the list of clusters holding indices of data points.
     Examples:
         >>> x = torch.randint(10,20,(10,)).tolist()
         >>> x
@@ -35,22 +31,14 @@ def kmeans(x, k, max_it=32, dist_lambda=None):
         [[1, 3], [0, 5, 9], [2, 4, 6, 7, 8]]
     """
 
-    if dist_lambda is None:
-        dist_lambda = lambda a, b: torch.abs_(a - b)
-
     # the number of clusters must not be greater than the number of datapoints
-    x = x.float() if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.float)
-    k = min(len(x), k)
-    if x.dim() == 1:
-        x = x.unsqueeze(-1)
+    x, k = torch.tensor(x, dtype=torch.float), min(len(x), k)
     # collect unique datapoints
-    d = x.unique(dim=0)
+    d = x.unique()
     # initialize k centroids randomly
     c = d[torch.randperm(len(d))[:k]]
     # assign each datapoint to the cluster with the closest centroid
-    n_x = x.size(0)
-    x_dim = x[0].numel()
-    dists, y = dist_lambda(x.unsqueeze(1), c.unsqueeze(0)).view(n_x, k, x_dim).sum(-1).min(-1)
+    dists, y = torch.abs_(x.unsqueeze(-1) - c).min(-1)
 
     for _ in range(max_it):
         # if an empty cluster is encountered,
@@ -69,18 +57,16 @@ def kmeans(x, k, max_it=32, dist_lambda=None):
                 mask = torch.arange(k).unsqueeze(-1).eq(y)
             none = torch.where(~mask.any(-1))[0].tolist()
         # update the centroids
-        c, old = (x.view(1, n_x, x_dim) * mask.unsqueeze(-1)).sum(1) / mask.sum(-1).unsqueeze(-1), c
+        c, old = (x * mask).sum(-1) / mask.sum(-1), c
         # re-assign all datapoints to clusters
-        dists, y = dist_lambda(x.unsqueeze(1), c.unsqueeze(0)).view(n_x, k, x_dim).sum(-1).min(-1)
+        dists, y = torch.abs_(x.unsqueeze(-1) - c).min(-1)
         # stop iteration early if the centroids converge
         if c.equal(old):
             break
     # assign all datapoints to the new-generated clusters
     # the empty ones are discarded
-    assigned = y.unique(dim=0).tolist()
+    assigned = y.unique().tolist()
     # get the centroids of the assigned clusters
-    if c.size(-1) == 1:
-        c = c.squeeze(-1)
     centroids = c[assigned].tolist()
     # map all values of datapoints to buckets
     clusters = [torch.where(y.eq(i))[0].tolist() for i in assigned]
