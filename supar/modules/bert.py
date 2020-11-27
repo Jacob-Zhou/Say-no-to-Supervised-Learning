@@ -3,8 +3,6 @@
 import torch.nn as nn
 from supar.modules.scalar_mix import ScalarMix
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoConfig, AutoModel
-
 
 class BertEmbedding(nn.Module):
     """
@@ -39,7 +37,7 @@ class BertEmbedding(nn.Module):
     def __init__(self, model, n_layers, n_out, pad_index=0, dropout=0,
                  requires_grad=False):
         super().__init__()
-
+        from transformers import AutoConfig, AutoModel
         config = AutoConfig.from_pretrained(model, output_hidden_states=True)
         self.model = model
         self.bert = AutoModel.from_pretrained(model, config=config)

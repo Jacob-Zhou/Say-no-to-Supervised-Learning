@@ -324,6 +324,47 @@ class SubwordField(Field):
         return sequences
 
 
+class ElmoField(Field):
+    """
+    A field that conducts tokenization and numericalization over each token rather the sequence.
+
+    This is customized for models requiring character/subword-level inputs, e.g., CharLSTM and BERT.
+
+    Args:
+        fix_len (int):
+            A fixed length that all subword pieces will be padded to.
+            This is used for truncating the subword pieces that exceed the length.
+            To save the memory, the final length will be the smaller value
+            between the max length of subword pieces in a batch and fix_len.
+
+    Examples:
+        >>> field = ElmoField()
+        >>> field.transform([['This', 'field', 'performs', 'token-level', 'tokenization']])[0]
+        tensor([[  101,     0,     0],
+                [ 1188,     0,     0],
+                [ 1768,     0,     0],
+                [10383,     0,     0],
+                [22559,   118,  1634],
+                [22559,  2734,     0],
+                [  102,     0,     0]])
+    """
+
+    def __init__(self, *args, **kwargs):
+        from allennlp.modules.elmo import batch_to_ids
+        self.tokenizer = batch_to_ids
+        super().__init__(*args, **kwargs)
+
+    def build(self, dataset, min_freq=1, embed=None):
+        pass
+
+    @property
+    def pad_index(self):
+        return 0
+
+    def transform(self, sequences):
+        sequences = [self.tokenizer([seq])[0] for seq in sequences]
+        return sequences
+
 class ChartField(Field):
     """
     Field dealing with constituency trees.

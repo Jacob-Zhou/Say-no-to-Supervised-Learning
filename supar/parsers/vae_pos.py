@@ -11,8 +11,9 @@ from supar.utils.common import bos, eos, pad, unk
 from supar.utils.field import Field, SubwordField
 from supar.utils.fn import ispunct, heatmap
 from supar.utils.logging import get_logger, progress_bar
-from supar.utils.metric import ManyToOneAccuracy
+from supar.utils.metric import ManyToOneAccuracy, Metric
 from supar.utils.transform import CoNLL
+from supar.utils.parallel import is_master
 
 logger = get_logger(__name__)
 
@@ -115,22 +116,44 @@ class VAEPOSTagger(Parser):
 
         return super().predict(**Config().update(locals()))
 
-    def _train(self, loader):
+    def _train(self, loader, closure=None, best_metric=None):
         self.model.train()
 
         bar = progress_bar(loader)
-        with torch.autograd.set_detect_anomaly(True):
-            for words, feats, tgt_words, tags in bar:
-                self.optimizer.zero_grad()
-                mask = words.ne(self.WORD.pad_index)[:, 2:]
-                # ignore the first token of each sentence
-                s_tag = self.model(words, feats)
-                loss = self.model.loss(s_tag, tgt_words, tags, mask)
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
-                self.optimizer.step()
-                self.scheduler.step()
-                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss:.4f}")
+        step = 0
+        evaluate_step = self.args.evaluate_step
+        if evaluate_step > len(loader):
+            closure = None
+        dev_metric = None
+        if best_metric is None:
+            best_metric = Metric()
+        saved = ''
+        for words, feats, tgt_words, tags in bar:
+            self.optimizer.zero_grad()
+            mask = words.ne(self.WORD.pad_index)[:, 2:]
+            # ignore the first token of each sentence
+            s_tag = self.model(words, feats)
+            loss = self.model.loss(s_tag, tgt_words, tags, mask)
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
+            self.optimizer.step()
+            self.scheduler.step()
+            if closure is None:
+                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss.mean():.4f}")
+            else:
+                if step != 0 and step % evaluate_step == 0:
+                    saved = ''
+                    _, dev_metric = closure()
+                    self.model.train()
+                    if dev_metric > best_metric:
+                        best_metric = dev_metric
+                        if is_master():
+                            self.save(self.args.path)
+                            saved = "(saved)"
+                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss.mean():.4f}, {dev_metric} {saved}")
+            step += 1
+
+        return best_metric
 
     @torch.no_grad()
     def _evaluate(self, loader):
@@ -199,7 +222,7 @@ class VAEPOSTagger(Parser):
 
         logger.info("Build the fields")
         WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
-        TGT_WORD = Field('words')
+        TGT_WORD = Field('tgt_words')
         CPOS = Field('tags')
         if args.feat == 'char':
             FEAT = SubwordField('chars', pad=pad, unk=unk, bos=bos, eos=eos, fix_len=args.fix_len)

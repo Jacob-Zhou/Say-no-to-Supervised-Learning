@@ -365,6 +365,12 @@ class VAEPOSModel(nn.Module):
             nn.init.zeros_(self.word_embed.weight)
         return self
 
+    def extra_repr(self):
+        # We treat the extra repr like the sub-module, one item per line
+        extra_lines = []
+        extra_lines.append('(generator): Parameter(' + ', '.join([str(i) for i in self.generator.shape]) + ')')
+        return "\n".join(extra_lines)
+
     def forward(self, words, feats):
         """
         Args:
@@ -412,56 +418,11 @@ class VAEPOSModel(nn.Module):
         x_b = self.lstm_dropout(x_b)
 
         x = torch.cat([x_f[:, :-2], x_b[:, 2:]], dim=-1)
-        # x = x[:, :-2]
         # apply MLPs to the BiLSTM output states
         s_tag = self.fc_pos(x)
         s_tag = self.layer_norm(s_tag)
 
         return s_tag
-
-    def _forward(self, emit_probs, mask, forward=True):
-        # the end position of each sentence in a batch
-        lens = mask.sum(-1)
-        emit_probs = emit_probs.double()
-        trans_probs = self.trans.log_softmax(-1).double()
-        start_probs = self.start.log_softmax(-1).unsqueeze(0).double()
-        end_probs   = self.end.log_softmax(-1).unsqueeze(0).double()
-        batch_size, seq_len, n_cpos = emit_probs.shape
-        # alphabeta/pointer: [batch_size, seq_len, n_cpos]
-        alphabeta = emit_probs.new_zeros(batch_size, seq_len, n_cpos, dtype=torch.double).log()
-        pointer = lens.new_zeros(batch_size, dtype=torch.long) if forward else (lens-1)
-        if forward:
-            alphabeta[torch.arange(batch_size), pointer] = start_probs + emit_probs[:, 0]
-        else:
-            alphabeta[torch.arange(batch_size), pointer] = end_probs
-        pointer = pointer + (1 if forward else -1)
-        while True:
-            compute_mask = (pointer < lens) if forward else (pointer >= 0)
-            if not compute_mask.any():
-                break
-            masked_batch_idx = torch.arange(batch_size)[compute_mask]
-            masked_pointer   = pointer[compute_mask]
-            if forward:
-                # [masked_batch_size, n_cpos_pre, n_cpos_now] -> [masked_batch_size, n_cpos_now]
-                scores = alphabeta[masked_batch_idx, masked_pointer-1].unsqueeze(-1) + \
-                            emit_probs[masked_batch_idx, masked_pointer].unsqueeze(1) + \
-                            trans_probs
-            else:
-                # [masked_batch_size, n_cpos_now, n_cpos_next] -> [masked_batch_size, n_cpos_now]
-                scores = alphabeta[masked_batch_idx, masked_pointer+1].unsqueeze(1) + \
-                            emit_probs[masked_batch_idx, masked_pointer+1].unsqueeze(1) + \
-                            trans_probs
-                scores = scores.permute(0, 2, 1)
-            scores = torch.logsumexp(scores, dim=1)
-            alphabeta[masked_batch_idx, masked_pointer] = scores
-            pointer = pointer + (1 if forward else -1)
-
-        last_alphabeta = alphabeta[torch.arange(batch_size), lens-1] if forward else alphabeta[:, 0]
-        last_alphabeta = last_alphabeta + (end_probs if forward else (start_probs + emit_probs[:, 0]))
-
-        logP = torch.logsumexp(last_alphabeta, dim=-1)
-
-        return alphabeta, logP
 
     def decode(self, s_tag, words, mask):
         log_emit_probs = self.generator.log_softmax(0)
@@ -483,9 +444,6 @@ class VAEPOSModel(nn.Module):
             loss (torch.Tensor): scalar
                 The training loss.
         """
-        # if self.training:
-        #     return nn.functional.cross_entropy(s_tag[mask], tags[mask])
-        # else:
         log_emit_probs = self.generator.log_softmax(0)
         # [batch_size, seq_len, n_cpos]
         log_emit_probs = nn.functional.embedding(words, log_emit_probs)

@@ -80,25 +80,31 @@ class Parser(object):
         logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}\n")
         heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
+        def closure():
+            return self._evaluate(dev.loader)
+
         for epoch in range(1, args.epochs + 1):
             start = datetime.now()
-
             logger.info(f"Epoch {epoch} / {args.epochs}:")
-            self._train(train.loader)
-            loss, dev_metric = self._evaluate(dev.loader)
-            clusters = dev_metric.clusters
-            logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}")
-            heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
+            inner_best_metric = self._train(train.loader, closure=closure, best_metric=best_metric)
+            if inner_best_metric > best_metric:
+                best_e, best_metric = epoch, inner_best_metric
+            loss, dev_metric = closure()
             t = datetime.now() - start
             # save the model if it is the best so far
+            saved = ""
             if dev_metric > best_metric:
                 best_e, best_metric = epoch, dev_metric
                 if is_master():
                     self.save(args.path)
-                logger.info(f"{t}s elapsed (saved)\n")
-            else:
-                logger.info(f"{t}s elapsed\n")
+                saved = "(saved)"
+            logger.info(f"{'current:':10} - loss: {loss:.4f} - {dev_metric}")
+            if self.args.evaluate_step < len(train.loader):
+                logger.info(f"{'best:':10} - loss: {loss:.4f} - {best_metric}")
+            logger.info(f"{t}s elapsed {saved}\n")
+            clusters = dev_metric.clusters
+            heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
             elapsed += t
             if best_metric == 1.:
                 break
