@@ -47,6 +47,15 @@ def has_number(token):
     return has_num
 
 
+@lru_cache(maxsize=1024)
+def replace_digit(token):
+    return ''.join(['0' if isdigit(char) else char for char in token])
+
+
+def replace_digit_fn(sequence):
+    return [replace_digit(token) for token in sequence]
+
+
 def stripe(x, n, w, offset=(0, 0), dim=1):
     """
     Returns a diagonal stripe of the tensor.

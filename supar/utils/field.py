@@ -186,7 +186,7 @@ class Field(RawField):
         if not embed:
             self.embed = None
         else:
-            tokens = self.preprocess(embed.tokens)
+            tokens = self.preprocess(list(embed.tokens))
             # if the `unk` token has existed in the pretrained,
             # then replace it with a self-defined one
             if embed.unk:

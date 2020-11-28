@@ -9,7 +9,7 @@ from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
 from supar.utils.common import bos, eos, pad, unk
 from supar.utils.field import Field, SubwordField
-from supar.utils.fn import ispunct, heatmap
+from supar.utils.fn import ispunct, heatmap, replace_digit_fn
 from supar.utils.logging import get_logger, progress_bar
 from supar.utils.metric import ManyToOneAccuracy, Metric
 from supar.utils.transform import CoNLL
@@ -222,6 +222,7 @@ class VAEPOSTagger(Parser):
 
         logger.info("Build the fields")
         WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
+        # WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=False)
         TGT_WORD = Field('tgt_words')
         CPOS = Field('tags')
         if args.feat == 'char':

@@ -308,7 +308,7 @@ class VAEPOSModel(nn.Module):
                  n_lstm_hidden=400,
                  n_lstm_layers=3,
                  lstm_dropout=.33,
-                 n_mlp_dec=100,
+                 n_mlp=512,
                  mlp_dropout=.33,
                  feat_pad_index=0,
                  pad_index=0,
@@ -346,9 +346,15 @@ class VAEPOSModel(nn.Module):
                            num_layers=n_lstm_layers,
                            dropout=lstm_dropout)
         self.lstm_dropout = SharedDropout(p=lstm_dropout)
+        # self.mlp    = MLP(n_lstm_hidden*2, n_mlp)
+        # self.fc_pos = nn.Linear(n_mlp, n_cpos)
+        # self.layer_norm_enc = nn.LayerNorm(n_cpos)
+        # self.activation_dec = nn.LeakyReLU(negative_slope=0.1)
+        # # self.layer_norm_dec = nn.LayerNorm(n_cpos)
 
+        # self.generator = nn.Parameter(torch.ones(n_tgt_words, n_mlp))
         self.fc_pos = nn.Linear(n_lstm_hidden*2, n_cpos)
-        self.layer_norm = nn.LayerNorm(n_cpos)
+        self.layer_norm = nn.LayerNorm(n_cpos, eps=1e-12)
 
         self.generator = nn.Parameter(torch.ones(n_tgt_words, n_cpos))
 
@@ -358,6 +364,19 @@ class VAEPOSModel(nn.Module):
 
     def reset_parameters(self):
         nn.init.normal_(self.generator.data, 0, 1)
+        # for w in self.lstm_f.parameters():
+        #     nn.init.normal_(w, 0, 1./(2.*self.args.n_lstm_hidden))
+        # for w in self.lstm_b.parameters():
+        #     nn.init.normal_(w, 0, 1./(2.*self.args.n_lstm_hidden))
+        # for k in range(self.args.n_lstm_layers):
+        #     nn.init.zeros_(self.lstm_f.__getattr__(f'bias_hh_l{k}'))
+        #     nn.init.zeros_(self.lstm_b.__getattr__(f'bias_hh_l{k}'))
+        #     nn.init.zeros_(self.lstm_f.__getattr__(f'bias_ih_l{k}'))
+        #     nn.init.zeros_(self.lstm_b.__getattr__(f'bias_ih_l{k}'))
+        #     nn.init.ones_(self.lstm_f.__getattr__(f'bias_hh_l{k}')[1])
+        #     nn.init.ones_(self.lstm_b.__getattr__(f'bias_hh_l{k}')[1])
+        #     nn.init.ones_(self.lstm_f.__getattr__(f'bias_ih_l{k}')[1])
+        #     nn.init.ones_(self.lstm_b.__getattr__(f'bias_ih_l{k}')[1])
 
     def load_pretrained(self, embed=None):
         if embed is not None:
@@ -419,13 +438,18 @@ class VAEPOSModel(nn.Module):
 
         x = torch.cat([x_f[:, :-2], x_b[:, 2:]], dim=-1)
         # apply MLPs to the BiLSTM output states
+        # x = self.mlp(x)
         s_tag = self.fc_pos(x)
+        # s_tag = self.layer_norm_enc(s_tag)
         s_tag = self.layer_norm(s_tag)
 
         return s_tag
 
     def decode(self, s_tag, words, mask):
         log_emit_probs = self.generator.log_softmax(0)
+        # s_emit = self.activation_dec(self.generator)
+        # s_emit = self.fc_pos(s_emit)
+        # log_emit_probs = s_emit.log_softmax(0)
         # [batch_size, seq_len, n_cpos]
         log_emit_probs = nn.functional.embedding(words, log_emit_probs)
         log_tag_probs = s_tag.log_softmax(-1)
@@ -445,6 +469,9 @@ class VAEPOSModel(nn.Module):
                 The training loss.
         """
         log_emit_probs = self.generator.log_softmax(0)
+        # s_emit = self.activation_dec(self.generator)
+        # s_emit = self.fc_pos(s_emit)
+        # log_emit_probs = s_emit.log_softmax(0)
         # [batch_size, seq_len, n_cpos]
         log_emit_probs = nn.functional.embedding(words, log_emit_probs)
         log_emit_probs[~mask] = 0
