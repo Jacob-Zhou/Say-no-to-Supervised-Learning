@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import supar
 import torch
 import torch.distributed as dist
+from functools import partial
 from supar.utils import Config, Dataset
 from supar.utils.field import Field
 from supar.utils.logging import init_logger, logger
@@ -17,7 +18,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR
 from collections import Counter
 from pprint import pprint
-
+from torch.utils.tensorboard import SummaryWriter
 
 class Parser(object):
 
@@ -62,35 +63,58 @@ class Parser(object):
             self.model = DDP(self.model,
                              device_ids=[dist.get_rank()],
                              find_unused_parameters=True)
-        if not args.em_alg:
-            self.optimizer = Adam(self.model.parameters(),
-                                args.lr,
-                                (args.mu, args.nu),
-                                args.epsilon,
-                                weight_decay=args.weight_decay)
-            self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
-            logger.info(f"{self.optimizer}\n")
+        self.optimizer = Adam(self.model.parameters(),
+                            args.lr,
+                            (args.mu, args.nu),
+                            args.epsilon,
+                            weight_decay=args.weight_decay)
+        self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
+        logger.info(f"{self.optimizer}\n")
+
+        writer = SummaryWriter(comment=args.path.split("/")[1])
+
 
         elapsed = timedelta()
         best_e, best_metric = 1, Metric()
 
         logger.info(f"Init:")
-        loss, dev_metric = self._evaluate(dev.loader)
+        loss, dev_metric = self._evaluate(dev.loader, writer=writer)
         clusters = dev_metric.clusters
         logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}\n")
         heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
-        def closure():
-            return self._evaluate(dev.loader)
+        def closure(epoch):
+            return self._evaluate(dev.loader, writer=writer, epoch=epoch)
+
+        def write_params(epoch):
+            # writer.add_embedding(self.model.tgt_words_gen, metadata=self.TGT_WORD.vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_nums_gen,  metadata=self.TGT_WORD.feature_fields[0].vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_hyps_gen,  metadata=self.TGT_WORD.feature_fields[1].vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_caps_gen,  metadata=self.TGT_WORD.feature_fields[2].vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_usufs_gen, metadata=self.TGT_WORD.feature_fields[3].vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_bsufs_gen, metadata=self.TGT_WORD.feature_fields[4].vocab.itos, global_step=epoch)
+            # writer.add_embedding(self.model.tgt_fsufs_gen, metadata=self.TGT_WORD.feature_fields[5].vocab.itos, global_step=epoch)
+            for name, param in self.model.named_parameters():
+                name = name.replace('.', '/')
+                writer.add_histogram(name, param, epoch)
+                writer.add_scalar(name+".std", param.std(), epoch)
+                writer.add_scalar(name+".mean", param.mean(), epoch)
+            writer.flush()
+
+        write_params(0)
 
         for epoch in range(1, args.epochs + 1):
+
             start = datetime.now()
             logger.info(f"Epoch {epoch} / {args.epochs}:")
 
-            inner_best_metric = self._train(train.loader, closure=closure, best_metric=best_metric)
+            inner_best_metric = self._train(train.loader, 
+                                            closure=partial(closure, epoch=epoch), 
+                                            best_metric=best_metric, writer=writer)
             if inner_best_metric > best_metric:
                 best_e, best_metric = epoch, inner_best_metric
-            loss, dev_metric = closure()
+            write_params(epoch)
+            loss, dev_metric = closure(epoch)
             t = datetime.now() - start
             # save the model if it is the best so far
             saved = ""

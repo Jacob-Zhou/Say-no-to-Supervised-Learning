@@ -36,15 +36,45 @@ def tohalfwidth(token):
     return unicodedata.normalize('NFKC', token)
 
 
-@lru_cache(maxsize=1024)
-def has_number(token):
+@lru_cache(maxsize=8096)
+def hasnumber(token):
     has_num = False
-    num_set = set(range(10))
     for char in token:
-        if char in num_set:
+        if isdigit(char):
             has_num = True
             break
     return has_num
+
+
+@lru_cache(maxsize=8096)
+def hashyphen(token):
+    return "-" in token
+
+
+@lru_cache(maxsize=8096)
+def isinitcapitalized(token):
+    return str.isupper(token[0])
+
+
+@lru_cache(maxsize=8096)
+def getsuffix(token, n=1):
+    return token[-n:]
+
+
+def hasnumber_fn(sequence):
+    return [str(hasnumber(token)) for token in sequence]
+
+
+def hashyphen_fn(sequence):
+    return [str(hashyphen(token)) for token in sequence]
+
+
+def isinitcapitalized_fn(sequence):
+    return [str(isinitcapitalized(token)) for token in sequence]
+
+
+def getsuffix_fn(sequence, n=1):
+    return [getsuffix(token, n) for token in sequence]
 
 
 @lru_cache(maxsize=1024)

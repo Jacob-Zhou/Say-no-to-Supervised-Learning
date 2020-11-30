@@ -37,3 +37,6 @@ nohup.out
 
 # image
 *.png
+
+# tensorboard
+runs

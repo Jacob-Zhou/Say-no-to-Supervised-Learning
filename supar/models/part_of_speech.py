@@ -297,6 +297,12 @@ class VAEPOSModel(nn.Module):
                  n_feats,
                  n_cpos,
                  n_tgt_words,
+                 n_tgt_nums,
+                 n_tgt_hyps,
+                 n_tgt_caps,
+                 n_tgt_usufs,
+                 n_tgt_bsufs,
+                 n_tgt_fsufs,
                  feat='char',
                  n_embed=100,
                  n_feat_embed=100,
@@ -308,8 +314,9 @@ class VAEPOSModel(nn.Module):
                  n_lstm_hidden=400,
                  n_lstm_layers=3,
                  lstm_dropout=.33,
-                 n_mlp=512,
+                 n_mlp_dec=100,
                  mlp_dropout=.33,
+                 dec_dropout=.33,
                  feat_pad_index=0,
                  pad_index=0,
                  unk_index=1,
@@ -346,28 +353,34 @@ class VAEPOSModel(nn.Module):
                            num_layers=n_lstm_layers,
                            dropout=lstm_dropout)
         self.lstm_dropout = SharedDropout(p=lstm_dropout)
-        # self.mlp    = MLP(n_lstm_hidden*2, n_mlp)
-        # self.fc_pos = nn.Linear(n_mlp, n_cpos)
-        # self.layer_norm_enc = nn.LayerNorm(n_cpos)
-        # self.activation_dec = nn.LeakyReLU(negative_slope=0.1)
-        # # self.layer_norm_dec = nn.LayerNorm(n_cpos)
-
-        # self.generator = nn.Parameter(torch.ones(n_tgt_words, n_mlp))
+        self.layer_norm_0 = nn.LayerNorm(n_lstm_hidden*2, eps=1e-12)
         self.fc_pos = nn.Linear(n_lstm_hidden*2, n_cpos)
-        self.layer_norm = nn.LayerNorm(n_cpos, eps=1e-12)
+        self.layer_norm_1 = nn.LayerNorm(n_cpos, eps=1e-12)
 
-        self.generator = nn.Parameter(torch.ones(n_tgt_words, n_cpos))
-
+        self.tgt_words_gen = nn.Parameter(torch.ones(n_tgt_words, n_cpos))
+        self.tgt_nums_gen  = nn.Parameter(torch.ones(n_tgt_nums, n_cpos))
+        self.tgt_hyps_gen  = nn.Parameter(torch.ones(n_tgt_hyps, n_cpos))
+        self.tgt_caps_gen  = nn.Parameter(torch.ones(n_tgt_caps, n_cpos))
+        self.tgt_usufs_gen = nn.Parameter(torch.ones(n_tgt_usufs, n_cpos))
+        self.tgt_bsufs_gen = nn.Parameter(torch.ones(n_tgt_bsufs, n_cpos))
+        self.tgt_fsufs_gen = nn.Parameter(torch.ones(n_tgt_fsufs, n_cpos))
+        # self.dec_dropout = IndependentDropout(p=dec_dropout)
         self.pad_index = pad_index
         self.unk_index = unk_index
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.normal_(self.generator.data, 0, 1)
+        nn.init.normal_(self.tgt_words_gen.data, 0, 1)
+        nn.init.normal_(self.tgt_nums_gen.data,  0, 1)
+        nn.init.normal_(self.tgt_hyps_gen.data,  0, 1)
+        nn.init.normal_(self.tgt_caps_gen.data,  0, 1)
+        nn.init.normal_(self.tgt_usufs_gen.data, 0, 1)
+        nn.init.normal_(self.tgt_bsufs_gen.data, 0, 1)
+        nn.init.normal_(self.tgt_fsufs_gen.data, 0, 1)
         # for w in self.lstm_f.parameters():
-        #     nn.init.normal_(w, 0, 1./(2.*self.args.n_lstm_hidden))
+        #     nn.init.uniform_(w, 0, 1./(2.*self.args.n_lstm_hidden))
         # for w in self.lstm_b.parameters():
-        #     nn.init.normal_(w, 0, 1./(2.*self.args.n_lstm_hidden))
+        #     nn.init.uniform_(w, 0, 1./(2.*self.args.n_lstm_hidden))
         # for k in range(self.args.n_lstm_layers):
         #     nn.init.zeros_(self.lstm_f.__getattr__(f'bias_hh_l{k}'))
         #     nn.init.zeros_(self.lstm_b.__getattr__(f'bias_hh_l{k}'))
@@ -387,10 +400,16 @@ class VAEPOSModel(nn.Module):
     def extra_repr(self):
         # We treat the extra repr like the sub-module, one item per line
         extra_lines = []
-        extra_lines.append('(generator): Parameter(' + ', '.join([str(i) for i in self.generator.shape]) + ')')
+        extra_lines.append('(tgt_words_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_words_gen.shape]) + ')')
+        extra_lines.append('(tgt_nums_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_nums_gen.shape]) + ')')
+        extra_lines.append('(tgt_hyps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_hyps_gen.shape]) + ')')
+        extra_lines.append('(tgt_caps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_caps_gen.shape]) + ')')
+        extra_lines.append('(tgt_usufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_usufs_gen.shape]) + ')')
+        extra_lines.append('(tgt_bsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_bsufs_gen.shape]) + ')')
+        extra_lines.append('(tgt_fsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_fsufs_gen.shape]) + ')')
         return "\n".join(extra_lines)
 
-    def forward(self, words, feats):
+    def forward(self, words, feats, tgt_words, tgt_feats):
         """
         Args:
             words (torch.LongTensor) [batch_size, seq_len]:
@@ -437,25 +456,39 @@ class VAEPOSModel(nn.Module):
         x_b = self.lstm_dropout(x_b)
 
         x = torch.cat([x_f[:, :-2], x_b[:, 2:]], dim=-1)
+        x = self.layer_norm_0(x)
         # apply MLPs to the BiLSTM output states
-        # x = self.mlp(x)
         s_tag = self.fc_pos(x)
-        # s_tag = self.layer_norm_enc(s_tag)
-        s_tag = self.layer_norm(s_tag)
-
-        return s_tag
-
-    def decode(self, s_tag, words, mask):
-        log_emit_probs = self.generator.log_softmax(0)
-        # s_emit = self.activation_dec(self.generator)
-        # s_emit = self.fc_pos(s_emit)
-        # log_emit_probs = s_emit.log_softmax(0)
-        # [batch_size, seq_len, n_cpos]
-        log_emit_probs = nn.functional.embedding(words, log_emit_probs)
+        s_tag = self.layer_norm_1(s_tag)
         log_tag_probs = s_tag.log_softmax(-1)
-        return (log_tag_probs + log_emit_probs).argmax(-1)
 
-    def loss(self, s_tag, words, tags, mask):
+        # cal likelihood
+        (tgt_nums, tgt_hyps, tgt_caps,
+         tgt_usufs, tgt_bsufs, tgt_fsufs) = tgt_feats
+        # [batch_size, seq_len, n_cpos]
+        s_nums = nn.functional.embedding(tgt_nums, self.tgt_nums_gen)
+        s_hyps = nn.functional.embedding(tgt_hyps, self.tgt_hyps_gen)
+        s_caps = nn.functional.embedding(tgt_caps, self.tgt_caps_gen)
+        s_usufs = nn.functional.embedding(tgt_usufs, self.tgt_usufs_gen)
+        s_bsufs = nn.functional.embedding(tgt_bsufs, self.tgt_bsufs_gen)
+        s_fsufs = nn.functional.embedding(tgt_fsufs, self.tgt_fsufs_gen)
+        # feated_word_embeds = [s_nums, s_hyps, s_caps, 
+        #                       s_usufs, s_bsufs, s_fsufs]
+        # feated_word_embeds = [embed.unsqueeze(0) for embed in feated_word_embeds]
+        # (s_nums, s_hyps, s_caps, 
+        #  s_usufs, s_bsufs, s_fsufs) = self.dec_dropout(*feated_word_embeds)
+        # tgt_words_gen = self.tgt_words_gen.unsqueeze(0)
+        # log_emit_probs = (tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_fsufs).squeeze(0).log_softmax(0)
+        log_emit_probs = (self.tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_fsufs).log_softmax(0)
+        log_emit_probs = nn.functional.embedding(tgt_words, log_emit_probs)
+
+        likelihood = (log_tag_probs + log_emit_probs)
+        return likelihood
+
+    def decode(self, likelihood):
+        return likelihood.argmax(-1)
+
+    def loss(self, likelihood, mask):
         """
         Args:
             s_tag (torch.Tensor): [batch_size, seq_len, n_cpos]
@@ -468,14 +501,6 @@ class VAEPOSModel(nn.Module):
             loss (torch.Tensor): scalar
                 The training loss.
         """
-        log_emit_probs = self.generator.log_softmax(0)
-        # s_emit = self.activation_dec(self.generator)
-        # s_emit = self.fc_pos(s_emit)
-        # log_emit_probs = s_emit.log_softmax(0)
-        # [batch_size, seq_len, n_cpos]
-        log_emit_probs = nn.functional.embedding(words, log_emit_probs)
-        log_emit_probs[~mask] = 0
-        # gamma: [batch_size, seq_len, n_cpos]. aka. posterior probability.
-        log_tag_probs = s_tag.log_softmax(-1).masked_fill(~mask.unsqueeze(-1), 0)
-        expect = -(log_tag_probs + log_emit_probs).logsumexp(-1).sum(-1)
-        return expect.mean()
+        expect = -likelihood.logsumexp(-1)
+        expect = expect.masked_fill(~mask, 0).sum(-1)
+        return expect

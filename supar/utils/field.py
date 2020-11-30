@@ -72,7 +72,7 @@ class Field(RawField):
     """
 
     def __init__(self, name, pad=None, unk=None, bos=None, eos=None,
-                 lower=False, use_vocab=True, tokenize=None, fn=None):
+                 lower=False, use_vocab=True, tokenize=None, fn=None, feature_fields=None):
         self.name = name
         self.pad = pad
         self.unk = unk
@@ -82,6 +82,8 @@ class Field(RawField):
         self.use_vocab = use_vocab
         self.tokenize = tokenize
         self.fn = fn
+        self.feature_fields = feature_fields
+        self._features = None
 
         self.specials = [token for token in [pad, unk, bos, eos]
                          if token is not None]
@@ -104,6 +106,18 @@ class Field(RawField):
         s += ")"
 
         return s
+
+    @property
+    def features(self):
+        if self._features is None:
+            sequences = self.vocab.itos
+            if self.feature_fields is not None:
+                features = []
+                for feature_field in self.feature_fields:
+                    features.append(feature_field.transform([sequences])[0].to(self.device))
+                self._features = features
+        return self._features
+
 
     @property
     def pad_index(self):
@@ -161,7 +175,7 @@ class Field(RawField):
 
         return sequence
 
-    def build(self, dataset, min_freq=1, embed=None, not_extend_vocab=False):
+    def _build(self, sequences, min_freq=1, embed=None, not_extend_vocab=False):
         """
         Construct the Vocab object for this field from the dataset.
         If the Vocab has already existed, this function will have no effect.
@@ -175,9 +189,6 @@ class Field(RawField):
                 An Embedding instance, words in which will be extended to the vocabulary. Default: None.
         """
 
-        if hasattr(self, 'vocab'):
-            return
-        sequences = getattr(dataset, self.name)
         counter = Counter(token
                           for seq in sequences
                           for token in self.preprocess(seq))
@@ -202,6 +213,28 @@ class Field(RawField):
                 self.vocab = old_vocab
                 self.embed = self.embed[:len(self.vocab)]
             self.embed /= torch.std(self.embed)
+
+    def build(self, dataset, min_freq=1, embed=None, not_extend_vocab=False):
+        """
+        Construct the Vocab object for this field from the dataset.
+        If the Vocab has already existed, this function will have no effect.
+
+        Args:
+            dataset (Dataset):
+                A Dataset instance. One of the attributes should be named after the name of this field.
+            min_freq (int):
+                The minimum frequency needed to include a token in the vocabulary. Default: 1.
+            embed (Embedding):
+                An Embedding instance, words in which will be extended to the vocabulary. Default: None.
+        """
+
+        if hasattr(self, 'vocab'):
+            return
+        sequences = getattr(dataset, self.name)
+        self._build(sequences, min_freq=min_freq, embed=embed, not_extend_vocab=not_extend_vocab)
+        if self.feature_fields is not None:
+            for feature_field in self.feature_fields:
+                feature_field._build([self.vocab.itos], min_freq=0)
 
     def transform(self, sequences):
         """
