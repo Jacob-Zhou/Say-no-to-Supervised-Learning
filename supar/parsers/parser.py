@@ -97,8 +97,8 @@ class Parser(object):
             for name, param in self.model.named_parameters():
                 name = name.replace('.', '/')
                 writer.add_histogram(name, param, epoch)
-                writer.add_scalar(name+".std", param.std(), epoch)
-                writer.add_scalar(name+".mean", param.mean(), epoch)
+                writer.add_scalar(name+"/std", param.std(), epoch)
+                writer.add_scalar(name+"/mean", param.mean(), epoch)
             writer.flush()
 
         write_params(0)

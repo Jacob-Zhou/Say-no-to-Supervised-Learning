@@ -302,7 +302,7 @@ class VAEPOSModel(nn.Module):
                  n_tgt_caps,
                  n_tgt_usufs,
                  n_tgt_bsufs,
-                 n_tgt_fsufs,
+                 n_tgt_tsufs,
                  feat='char',
                  n_embed=100,
                  n_feat_embed=100,
@@ -357,25 +357,26 @@ class VAEPOSModel(nn.Module):
         self.fc_pos = nn.Linear(n_lstm_hidden*2, n_cpos)
         self.layer_norm_1 = nn.LayerNorm(n_cpos, eps=1e-12)
 
-        self.tgt_words_gen = nn.Parameter(torch.ones(n_tgt_words, n_mlp_dec))
-        self.tgt_nums_gen  = nn.Parameter(torch.ones(n_tgt_nums,  n_mlp_dec))
-        self.tgt_hyps_gen  = nn.Parameter(torch.ones(n_tgt_hyps,  n_mlp_dec))
-        self.tgt_caps_gen  = nn.Parameter(torch.ones(n_tgt_caps,  n_mlp_dec))
-        self.tgt_usufs_gen = nn.Parameter(torch.ones(n_tgt_usufs, n_mlp_dec))
-        self.tgt_bsufs_gen = nn.Parameter(torch.ones(n_tgt_bsufs, n_mlp_dec))
-        self.tgt_fsufs_gen = nn.Parameter(torch.ones(n_tgt_fsufs, n_mlp_dec))
+        self.tgt_nums_gen  = nn.Parameter(torch.zeros(n_tgt_nums,  n_mlp_dec))
+        self.tgt_hyps_gen  = nn.Parameter(torch.zeros(n_tgt_hyps,  n_mlp_dec))
+        self.tgt_caps_gen  = nn.Parameter(torch.zeros(n_tgt_caps,  n_mlp_dec))
+        self.tgt_usufs_gen = nn.Parameter(torch.zeros(n_tgt_usufs, n_mlp_dec))
+        self.tgt_bsufs_gen = nn.Parameter(torch.zeros(n_tgt_bsufs, n_mlp_dec))
+        self.tgt_tsufs_gen = nn.Parameter(torch.zeros(n_tgt_tsufs, n_mlp_dec))
+        self.batch_norm = nn.BatchNorm1d(n_mlp_dec*6+n_embed+n_feat_embed, eps=1e-12)
+        self.fc_dec = nn.Linear(n_mlp_dec*6+n_embed+n_feat_embed, n_cpos)
         self.pad_index = pad_index
         self.unk_index = unk_index
+        self.s_emit = None
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.normal_(self.tgt_words_gen.data, 0, 1)
         nn.init.normal_(self.tgt_nums_gen.data,  0, 1)
         nn.init.normal_(self.tgt_hyps_gen.data,  0, 1)
         nn.init.normal_(self.tgt_caps_gen.data,  0, 1)
         nn.init.normal_(self.tgt_usufs_gen.data, 0, 1)
         nn.init.normal_(self.tgt_bsufs_gen.data, 0, 1)
-        nn.init.normal_(self.tgt_fsufs_gen.data, 0, 1)
+        nn.init.normal_(self.tgt_tsufs_gen.data, 0, 1)
         # for w in self.lstm_f.parameters():
         #     nn.init.uniform_(w, 0, 1./(2.*self.args.n_lstm_hidden))
         # for w in self.lstm_b.parameters():
@@ -399,16 +400,16 @@ class VAEPOSModel(nn.Module):
     def extra_repr(self):
         # We treat the extra repr like the sub-module, one item per line
         extra_lines = []
-        extra_lines.append('(tgt_words_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_words_gen.shape]) + ')')
+        # extra_lines.append('(tgt_words_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_words_gen.shape]) + ')')
         extra_lines.append('(tgt_nums_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_nums_gen.shape]) + ')')
         extra_lines.append('(tgt_hyps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_hyps_gen.shape]) + ')')
         extra_lines.append('(tgt_caps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_caps_gen.shape]) + ')')
         extra_lines.append('(tgt_usufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_usufs_gen.shape]) + ')')
         extra_lines.append('(tgt_bsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_bsufs_gen.shape]) + ')')
-        extra_lines.append('(tgt_fsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_fsufs_gen.shape]) + ')')
+        extra_lines.append('(tgt_tsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_tsufs_gen.shape]) + ')')
         return "\n".join(extra_lines)
 
-    def forward(self, words, feats, tgt_words, tgt_feats):
+    def forward(self, words, feats, tgt_words, tgt_word_features, tgt_feats):
         """
         Args:
             words (torch.LongTensor) [batch_size, seq_len]:
@@ -462,20 +463,45 @@ class VAEPOSModel(nn.Module):
         log_tag_probs = s_tag.log_softmax(-1)
 
         # cal likelihood
-        (tgt_nums, tgt_hyps, tgt_caps,
-         tgt_usufs, tgt_bsufs, tgt_fsufs) = tgt_feats
-        # [batch_size, seq_len, n_cpos]
-        s_nums = nn.functional.embedding(tgt_nums, self.tgt_nums_gen)
-        s_hyps = nn.functional.embedding(tgt_hyps, self.tgt_hyps_gen)
-        s_caps = nn.functional.embedding(tgt_caps, self.tgt_caps_gen)
-        s_usufs = nn.functional.embedding(tgt_usufs, self.tgt_usufs_gen)
-        s_bsufs = nn.functional.embedding(tgt_bsufs, self.tgt_bsufs_gen)
-        s_tsufs = nn.functional.embedding(tgt_fsufs, self.tgt_fsufs_gen)
-        log_emit_probs = (self.tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_tsufs).log_softmax(0)
+        s_emit = self.get_s_emit(tgt_word_features, tgt_feats)
+
+        log_emit_probs = s_emit.log_softmax(0)
         log_emit_probs = nn.functional.embedding(tgt_words, log_emit_probs)
 
         likelihood = (log_tag_probs + log_emit_probs)
         return likelihood
+
+    def get_s_emit(self, tgt_word_features, tgt_feats):
+        if self.s_emit is None or self.training:
+            tgt_word_feature = tgt_word_features[0]
+            ext_word_features = tgt_word_feature
+            # set the indices larger than num_embeddings to unk_index
+            if hasattr(self, 'pretrained'):
+                ext_mask = tgt_word_feature.ge(self.word_embed.num_embeddings)
+                ext_word_features = tgt_word_feature.masked_fill(ext_mask, self.unk_index)
+
+            # get outputs from embedding layers
+            word_embed = self.word_embed(ext_word_features).squeeze(1)
+            if hasattr(self, 'pretrained'):
+                word_embed += self.pretrained(tgt_word_feature).squeeze(1)
+            feat_embed = self.feat_embed(tgt_word_features[1]).squeeze(1)
+            # concatenate the word and feat representations
+
+            (tgt_nums, tgt_hyps, tgt_caps,
+            tgt_usufs, tgt_bsufs, tgt_tsufs) = tgt_feats
+            # [batch_size, seq_len, n_cpos]
+            s_nums = nn.functional.embedding(tgt_nums, self.tgt_nums_gen)
+            s_hyps = nn.functional.embedding(tgt_hyps, self.tgt_hyps_gen)
+            s_caps = nn.functional.embedding(tgt_caps, self.tgt_caps_gen)
+            s_usufs = nn.functional.embedding(tgt_usufs, self.tgt_usufs_gen)
+            s_bsufs = nn.functional.embedding(tgt_bsufs, self.tgt_bsufs_gen)
+            s_tsufs = nn.functional.embedding(tgt_tsufs, self.tgt_tsufs_gen)
+            emit_embed = torch.cat((word_embed, feat_embed, s_nums, s_hyps, s_caps, s_usufs, s_bsufs, s_tsufs), dim=-1)
+            emit_embed = self.batch_norm(emit_embed)
+            self.s_emit = self.fc_dec(emit_embed)
+        return self.s_emit
+
+
 
     def decode(self, likelihood):
         return likelihood.argmax(-1)

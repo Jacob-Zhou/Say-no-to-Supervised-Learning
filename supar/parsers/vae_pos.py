@@ -4,7 +4,7 @@ import os
 
 import torch
 import torch.nn as nn
-from functools import partial
+from functools import partial, lru_cache
 from supar.models import VAEPOSModel
 from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
@@ -117,6 +117,15 @@ class VAEPOSTagger(Parser):
 
         return super().predict(**Config().update(locals()))
 
+    @lru_cache
+    def get_word_features(self):
+        sequences = [[word] for word in self.TGT_WORD.vocab.itos]
+        word_features = []
+        # batch_size == n_word
+        word_features.append(self.WORD.compose([seq[1:-1] for seq in self.WORD.transform(sequences)]))
+        word_features.append(self.FEAT.compose([seq[1:-1] for seq in self.FEAT.transform(sequences)]))
+        return word_features
+
     def _train(self, loader, closure=None, best_metric=None, writer=None):
         self.model.train()
 
@@ -130,11 +139,12 @@ class VAEPOSTagger(Parser):
             best_metric = Metric()
         saved = ''
         features = self.TGT_WORD.features
+        word_features = self.get_word_features()
         for words, feats, tgt_words, _ in bar:
             self.optimizer.zero_grad()
             mask = words.ne(self.WORD.pad_index)[:, 2:]
             # ignore the first token of each sentence
-            likelihood = self.model(words, feats, tgt_words, features)
+            likelihood = self.model(words, feats, tgt_words, word_features, features)
             loss = self.model.loss(likelihood, mask).mean()
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
@@ -160,13 +170,14 @@ class VAEPOSTagger(Parser):
     @torch.no_grad()
     def _evaluate(self, loader, writer=None, epoch=0):
         self.model.eval()
+        self.model.s_emit = None
 
         total_loss, metric = 0, ManyToOneAccuracy(n_clusters=self.args.n_cpos, n_cpos=self.args.n_cpos)
         features = self.TGT_WORD.features
-
+        word_features = self.get_word_features()
         for words, feats, tgt_words, tags in loader:
             mask = words.ne(self.WORD.pad_index)[:, 2:]
-            likelihood = self.model(words, feats, tgt_words, features)
+            likelihood = self.model(words, feats, tgt_words, word_features, features)
             total_loss += self.model.loss(likelihood, mask).sum()
             tag_preds = self.model.decode(likelihood)
             metric(tag_preds, tags, mask)
@@ -227,12 +238,12 @@ class VAEPOSTagger(Parser):
             return parser
 
         logger.info("Build the fields")
-        TGT_NUM = Field('TGT_num', fn=hasnumber_fn)
-        TGT_HYP = Field('TGT_hyp', fn=hashyphen_fn)
-        TGT_CAP = Field('TGT_cap', fn=isinitcapitalized_fn)
-        TGT_USUF = Field('TGT_usuf', fn=partial(getsuffix_fn, n=1))
-        TGT_BSUF = Field('TGT_bsuf', fn=partial(getsuffix_fn, n=2))
-        TGT_TSUF = Field('TGT_tsuf', fn=partial(getsuffix_fn, n=3))
+        TGT_NUM = Field('tgt_num', fn=hasnumber_fn)
+        TGT_HYP = Field('tgt_hyp', fn=hashyphen_fn)
+        TGT_CAP = Field('tgt_cap', fn=isinitcapitalized_fn)
+        TGT_USUF = Field('tgt_usuf', fn=partial(getsuffix_fn, n=1))
+        TGT_BSUF = Field('tgt_bsuf', fn=partial(getsuffix_fn, n=2))
+        TGT_TSUF = Field('tgt_tsuf', fn=partial(getsuffix_fn, n=3))
         # WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
         WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=False)
         TGT_WORD = Field('tgt_words', 
@@ -269,7 +280,7 @@ class VAEPOSTagger(Parser):
             'n_tgt_caps':  TGT_CAP.vocab.n_init,
             'n_tgt_usufs': TGT_USUF.vocab.n_init,
             'n_tgt_bsufs': TGT_BSUF.vocab.n_init,
-            'n_tgt_fsufs': TGT_TSUF.vocab.n_init,
+            'n_tgt_tsufs': TGT_TSUF.vocab.n_init,
             'n_feats': len(FEAT.vocab),
             'n_cpos':  len(CPOS.vocab),
             'pad_index': WORD.pad_index,
