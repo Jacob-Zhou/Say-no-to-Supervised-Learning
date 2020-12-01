@@ -357,14 +357,13 @@ class VAEPOSModel(nn.Module):
         self.fc_pos = nn.Linear(n_lstm_hidden*2, n_cpos)
         self.layer_norm_1 = nn.LayerNorm(n_cpos, eps=1e-12)
 
-        self.tgt_words_gen = nn.Parameter(torch.ones(n_tgt_words, n_cpos))
-        self.tgt_nums_gen  = nn.Parameter(torch.ones(n_tgt_nums, n_cpos))
-        self.tgt_hyps_gen  = nn.Parameter(torch.ones(n_tgt_hyps, n_cpos))
-        self.tgt_caps_gen  = nn.Parameter(torch.ones(n_tgt_caps, n_cpos))
-        self.tgt_usufs_gen = nn.Parameter(torch.ones(n_tgt_usufs, n_cpos))
-        self.tgt_bsufs_gen = nn.Parameter(torch.ones(n_tgt_bsufs, n_cpos))
-        self.tgt_fsufs_gen = nn.Parameter(torch.ones(n_tgt_fsufs, n_cpos))
-        # self.dec_dropout = IndependentDropout(p=dec_dropout)
+        self.tgt_words_gen = nn.Parameter(torch.ones(n_tgt_words, n_mlp_dec))
+        self.tgt_nums_gen  = nn.Parameter(torch.ones(n_tgt_nums,  n_mlp_dec))
+        self.tgt_hyps_gen  = nn.Parameter(torch.ones(n_tgt_hyps,  n_mlp_dec))
+        self.tgt_caps_gen  = nn.Parameter(torch.ones(n_tgt_caps,  n_mlp_dec))
+        self.tgt_usufs_gen = nn.Parameter(torch.ones(n_tgt_usufs, n_mlp_dec))
+        self.tgt_bsufs_gen = nn.Parameter(torch.ones(n_tgt_bsufs, n_mlp_dec))
+        self.tgt_fsufs_gen = nn.Parameter(torch.ones(n_tgt_fsufs, n_mlp_dec))
         self.pad_index = pad_index
         self.unk_index = unk_index
         self.reset_parameters()
@@ -471,15 +470,8 @@ class VAEPOSModel(nn.Module):
         s_caps = nn.functional.embedding(tgt_caps, self.tgt_caps_gen)
         s_usufs = nn.functional.embedding(tgt_usufs, self.tgt_usufs_gen)
         s_bsufs = nn.functional.embedding(tgt_bsufs, self.tgt_bsufs_gen)
-        s_fsufs = nn.functional.embedding(tgt_fsufs, self.tgt_fsufs_gen)
-        # feated_word_embeds = [s_nums, s_hyps, s_caps, 
-        #                       s_usufs, s_bsufs, s_fsufs]
-        # feated_word_embeds = [embed.unsqueeze(0) for embed in feated_word_embeds]
-        # (s_nums, s_hyps, s_caps, 
-        #  s_usufs, s_bsufs, s_fsufs) = self.dec_dropout(*feated_word_embeds)
-        # tgt_words_gen = self.tgt_words_gen.unsqueeze(0)
-        # log_emit_probs = (tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_fsufs).squeeze(0).log_softmax(0)
-        log_emit_probs = (self.tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_fsufs).log_softmax(0)
+        s_tsufs = nn.functional.embedding(tgt_fsufs, self.tgt_fsufs_gen)
+        log_emit_probs = (self.tgt_words_gen + s_nums + s_hyps + s_caps + s_usufs + s_bsufs + s_tsufs).log_softmax(0)
         log_emit_probs = nn.functional.embedding(tgt_words, log_emit_probs)
 
         likelihood = (log_tag_probs + log_emit_probs)
