@@ -2,10 +2,12 @@
 
 import unicodedata
 import torch
+import re
 import seaborn as sns
 import matplotlib.pyplot as plt
 from functools import lru_cache
 
+reCONTNUM = re.compile(r"[0-9]+")
 
 @lru_cache(maxsize=1024)
 def ispunct(token):
@@ -73,13 +75,16 @@ def isinitcapitalized_fn(sequence):
     return [str(isinitcapitalized(token)) for token in sequence]
 
 
-def getsuffix_fn(sequence, n=1):
-    return [getsuffix(token, n) for token in sequence]
+def getsuffix_fn(sequence, n=1, replace_digit=False):
+    sufs = [getsuffix(token, n) for token in sequence]
+    if replace_digit:
+        sufs = replace_digit_fn(sufs)
+    return sufs
 
 
 @lru_cache(maxsize=1024)
 def replace_digit(token):
-    return ''.join(['0' if isdigit(char) else char for char in token])
+    return reCONTNUM.sub('0', token)
 
 
 def replace_digit_fn(sequence):

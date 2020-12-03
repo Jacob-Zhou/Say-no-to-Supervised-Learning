@@ -363,7 +363,11 @@ class VAEPOSModel(nn.Module):
         self.tgt_usufs_gen = nn.Parameter(torch.zeros(n_tgt_usufs, n_mlp_dec))
         self.tgt_bsufs_gen = nn.Parameter(torch.zeros(n_tgt_bsufs, n_mlp_dec))
         self.tgt_tsufs_gen = nn.Parameter(torch.zeros(n_tgt_tsufs, n_mlp_dec))
-        self.batch_norm = nn.BatchNorm1d(n_mlp_dec*6+n_embed+n_feat_embed, eps=1e-12)
+        self.batch_norm = nn.BatchNorm1d(n_mlp_dec*6+n_embed+n_feat_embed, 
+                                         eps=1e-12, 
+                                         momentum=None,
+                                         track_running_stats=False)
+        self.layer_norm_2 = nn.LayerNorm(n_mlp_dec*6+n_embed+n_feat_embed, eps=1e-12)
         self.fc_dec = nn.Linear(n_mlp_dec*6+n_embed+n_feat_embed, n_cpos)
         self.pad_index = pad_index
         self.unk_index = unk_index
@@ -409,7 +413,7 @@ class VAEPOSModel(nn.Module):
         extra_lines.append('(tgt_tsufs_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_tsufs_gen.shape]) + ')')
         return "\n".join(extra_lines)
 
-    def forward(self, words, feats, tgt_words, tgt_word_features, tgt_feats):
+    def forward(self, words, feats, tgt_words, tgt_word_features, tgt_feats, epoch=0):
         """
         Args:
             words (torch.LongTensor) [batch_size, seq_len]:
@@ -463,7 +467,7 @@ class VAEPOSModel(nn.Module):
         log_tag_probs = s_tag.log_softmax(-1)
 
         # cal likelihood
-        s_emit = self.get_s_emit(tgt_word_features, tgt_feats)
+        s_emit = self.get_s_emit(tgt_word_features, tgt_feats, epoch=epoch)
 
         log_emit_probs = s_emit.log_softmax(0)
         log_emit_probs = nn.functional.embedding(tgt_words, log_emit_probs)
@@ -471,7 +475,7 @@ class VAEPOSModel(nn.Module):
         likelihood = (log_tag_probs + log_emit_probs)
         return likelihood
 
-    def get_s_emit(self, tgt_word_features, tgt_feats):
+    def get_s_emit(self, tgt_word_features, tgt_feats, epoch=-1):
         if self.s_emit is None or self.training:
             tgt_word_feature = tgt_word_features[0]
             ext_word_features = tgt_word_feature
@@ -496,12 +500,17 @@ class VAEPOSModel(nn.Module):
             s_usufs = nn.functional.embedding(tgt_usufs, self.tgt_usufs_gen)
             s_bsufs = nn.functional.embedding(tgt_bsufs, self.tgt_bsufs_gen)
             s_tsufs = nn.functional.embedding(tgt_tsufs, self.tgt_tsufs_gen)
+
+            if epoch <= self.args.grad_stop_epoch:
+                word_embed = word_embed.detach()
+                feat_embed = feat_embed.detach()
+
             emit_embed = torch.cat((word_embed, feat_embed, s_nums, s_hyps, s_caps, s_usufs, s_bsufs, s_tsufs), dim=-1)
+            # exchange order, batch->layer:79+
             emit_embed = self.batch_norm(emit_embed)
+            emit_embed = self.layer_norm_2(emit_embed)
             self.s_emit = self.fc_dec(emit_embed)
         return self.s_emit
-
-
 
     def decode(self, likelihood):
         return likelihood.argmax(-1)
@@ -520,5 +529,6 @@ class VAEPOSModel(nn.Module):
                 The training loss.
         """
         expect = -likelihood.logsumexp(-1)
-        expect = expect.masked_fill(~mask, 0).sum(-1)
-        return expect
+        loss = expect.masked_fill(~mask, 0).sum(-1)
+
+        return loss

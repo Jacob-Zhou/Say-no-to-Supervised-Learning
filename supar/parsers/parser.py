@@ -110,7 +110,7 @@ class Parser(object):
 
             inner_best_metric = self._train(train.loader, 
                                             closure=partial(closure, epoch=epoch), 
-                                            best_metric=best_metric, writer=writer)
+                                            best_metric=best_metric, writer=writer, epoch=epoch)
             if inner_best_metric > best_metric:
                 best_e, best_metric = epoch, inner_best_metric
             write_params(epoch)

@@ -10,7 +10,7 @@ from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
 from supar.utils.common import bos, eos, pad, unk
 from supar.utils.field import Field, SubwordField
-from supar.utils.fn import ispunct, heatmap, hasnumber_fn, isinitcapitalized_fn, hashyphen_fn, getsuffix_fn
+from supar.utils.fn import ispunct, heatmap, hasnumber_fn, isinitcapitalized_fn, hashyphen_fn, getsuffix_fn, replace_digit_fn
 from supar.utils.logging import get_logger, progress_bar
 from supar.utils.metric import ManyToOneAccuracy, Metric
 from supar.utils.transform import CoNLL
@@ -126,7 +126,7 @@ class VAEPOSTagger(Parser):
         word_features.append(self.FEAT.compose([seq[1:-1] for seq in self.FEAT.transform(sequences)]))
         return word_features
 
-    def _train(self, loader, closure=None, best_metric=None, writer=None):
+    def _train(self, loader, closure=None, best_metric=None, writer=None, epoch=0):
         self.model.train()
 
         bar = progress_bar(loader)
@@ -144,7 +144,7 @@ class VAEPOSTagger(Parser):
             self.optimizer.zero_grad()
             mask = words.ne(self.WORD.pad_index)[:, 2:]
             # ignore the first token of each sentence
-            likelihood = self.model(words, feats, tgt_words, word_features, features)
+            likelihood = self.model(words, feats, tgt_words, word_features, features, epoch)
             loss = self.model.loss(likelihood, mask).mean()
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip)
@@ -241,11 +241,11 @@ class VAEPOSTagger(Parser):
         TGT_NUM = Field('tgt_num', fn=hasnumber_fn)
         TGT_HYP = Field('tgt_hyp', fn=hashyphen_fn)
         TGT_CAP = Field('tgt_cap', fn=isinitcapitalized_fn)
-        TGT_USUF = Field('tgt_usuf', fn=partial(getsuffix_fn, n=1))
-        TGT_BSUF = Field('tgt_bsuf', fn=partial(getsuffix_fn, n=2))
-        TGT_TSUF = Field('tgt_tsuf', fn=partial(getsuffix_fn, n=3))
-        # WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True)
-        WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=False)
+        TGT_USUF = Field('tgt_usuf', fn=partial(getsuffix_fn, n=1, replace_digit=True))
+        TGT_BSUF = Field('tgt_bsuf', fn=partial(getsuffix_fn, n=2, replace_digit=True))
+        TGT_TSUF = Field('tgt_tsuf', fn=partial(getsuffix_fn, n=3, replace_digit=True))
+        WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=True, fn=replace_digit_fn)
+        # WORD = Field('words', pad=pad, unk=unk, bos=bos, eos=eos, lower=False)
         TGT_WORD = Field('tgt_words', 
                          feature_fields=[TGT_NUM, TGT_HYP, TGT_CAP, 
                                          TGT_USUF, TGT_BSUF, TGT_TSUF])
