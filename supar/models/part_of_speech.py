@@ -505,7 +505,12 @@ class VAEPOSModel(nn.Module):
                 word_embed = word_embed.detach()
                 feat_embed = feat_embed.detach()
 
-            emit_embed = torch.cat((word_embed, feat_embed, s_nums, s_hyps, s_caps, s_usufs, s_bsufs, s_tsufs), dim=-1)
+            feats = [word_embed, feat_embed, s_nums, s_hyps, s_caps, s_usufs, s_bsufs, s_tsufs]
+            feats = [feat.unsqueeze(1) for feat in feats]
+
+            feats = self.embed_dropout(*feats)
+
+            emit_embed = torch.cat([feat.squeeze(1) for feat in feats], dim=-1)
             # exchange order, batch->layer:79+
             emit_embed = self.batch_norm(emit_embed)
             emit_embed = self.layer_norm_2(emit_embed)
