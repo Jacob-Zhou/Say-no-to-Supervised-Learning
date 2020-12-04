@@ -154,19 +154,7 @@ class Parser(object):
         loss, metric = self._evaluate(dataset.loader)
         elapsed = datetime.now() - start
         logger.info(f"loss: {loss:.4f} - {metric}")
-        tag_map = {k:self.CPOS.vocab[v] for k,v in metric.tag_map.items()}
-        pprint(tag_map)
-        recalled_tags = Counter(tag_map.values())
-        unrecalled_tags = set(self.CPOS.vocab.stoi) - set(recalled_tags.keys())
-        pprint(recalled_tags)
-        pprint(unrecalled_tags)
-        gold_tag_map = {self.CPOS.vocab[k]:v for k,v in metric.gold_tag_map.items()}
-        pprint(gold_tag_map)
-        unrecalled_tag_map = {g:tag_map[gold_tag_map[g]] for g in self.CPOS.vocab.stoi}
-        unrecalled_tag_map = {k: v for k, v in unrecalled_tag_map.items() if k != v}
-        pprint(unrecalled_tag_map)
-        # heatmap(metric.clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.evaluate.clusters")
-        heatmap(self.model.T.softmax(-1).detach().cpu(), [f"#C{n}#" for n in range(len(self.CPOS.vocab))], f"{args.path}.T.clusters")
+        heatmap(metric.clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.evaluate.clusters")
         logger.info(f"{elapsed}s elapsed, {len(dataset)/elapsed.total_seconds():.2f} Sents/s")
 
         return loss, metric
@@ -176,8 +164,7 @@ class Parser(object):
         init_logger(logger, verbose=args.verbose)
 
         self.transform.eval()
-        if args.prob:
-            self.transform.append(Field('probs'))
+        self.transform.append(Field('probs'))
 
         logger.info("Load the data")
         dataset = Dataset(self.transform, data)

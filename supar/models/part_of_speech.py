@@ -381,19 +381,6 @@ class VAEPOSModel(nn.Module):
         nn.init.normal_(self.tgt_usufs_gen.data, 0, 1)
         nn.init.normal_(self.tgt_bsufs_gen.data, 0, 1)
         nn.init.normal_(self.tgt_tsufs_gen.data, 0, 1)
-        # for w in self.lstm_f.parameters():
-        #     nn.init.uniform_(w, 0, 1./(2.*self.args.n_lstm_hidden))
-        # for w in self.lstm_b.parameters():
-        #     nn.init.uniform_(w, 0, 1./(2.*self.args.n_lstm_hidden))
-        # for k in range(self.args.n_lstm_layers):
-        #     nn.init.zeros_(self.lstm_f.__getattr__(f'bias_hh_l{k}'))
-        #     nn.init.zeros_(self.lstm_b.__getattr__(f'bias_hh_l{k}'))
-        #     nn.init.zeros_(self.lstm_f.__getattr__(f'bias_ih_l{k}'))
-        #     nn.init.zeros_(self.lstm_b.__getattr__(f'bias_ih_l{k}'))
-        #     nn.init.ones_(self.lstm_f.__getattr__(f'bias_hh_l{k}')[1])
-        #     nn.init.ones_(self.lstm_b.__getattr__(f'bias_hh_l{k}')[1])
-        #     nn.init.ones_(self.lstm_f.__getattr__(f'bias_ih_l{k}')[1])
-        #     nn.init.ones_(self.lstm_b.__getattr__(f'bias_ih_l{k}')[1])
 
     def load_pretrained(self, embed=None):
         if embed is not None:
@@ -404,7 +391,6 @@ class VAEPOSModel(nn.Module):
     def extra_repr(self):
         # We treat the extra repr like the sub-module, one item per line
         extra_lines = []
-        # extra_lines.append('(tgt_words_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_words_gen.shape]) + ')')
         extra_lines.append('(tgt_nums_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_nums_gen.shape]) + ')')
         extra_lines.append('(tgt_hyps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_hyps_gen.shape]) + ')')
         extra_lines.append('(tgt_caps_gen): Parameter(' + ', '.join([str(i) for i in self.tgt_caps_gen.shape]) + ')')

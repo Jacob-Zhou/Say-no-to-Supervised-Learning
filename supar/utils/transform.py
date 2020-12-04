@@ -104,7 +104,7 @@ class Sentence(object):
         if 'keys' in self.__dict__ and name in self:
             index = self.maps[name]
             if index >= len(self.values):
-                self.__dict__[name] = value
+                self.values[-1] = value
             else:
                 self.values[index] = value
         else:

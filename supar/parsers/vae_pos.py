@@ -191,18 +191,21 @@ class VAEPOSTagger(Parser):
     @torch.no_grad()
     def _predict(self, loader):
         self.model.eval()
-
+        features = self.TGT_WORD.features
+        word_features = self.get_word_features()
         preds = {}
         tags = []
-        for words, feats, _ in progress_bar(loader):
-            mask = words.ne(self.WORD.pad_index)
+        probs = []
+        for words, feats, tgt_words in loader:
+            mask = words.ne(self.WORD.pad_index)[:, 2:]
             lens = mask.sum(1).tolist()
-            s_tag = self.model(words, feats)
-            tag_preds = self.model.decode(s_tag, words, mask)
+            likelihood = self.model(words, feats, tgt_words, word_features, features)
+            # tag_preds = self.model.decode(likelihood)
+            tag_probs, tag_preds = likelihood.softmax(-1).max(-1)
             tags.extend(tag_preds[mask].split(lens))
-
+            probs.extend([prob.tolist() for prob in tag_probs[mask].split(lens)])
         tags = [[f"#C{t}#" for t in seq.tolist()] for seq in tags]
-        preds = {'tags': tags}
+        preds = {'tags': tags, 'probs': probs}
 
         return preds
 
