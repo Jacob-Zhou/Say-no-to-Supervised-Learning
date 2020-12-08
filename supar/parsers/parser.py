@@ -71,8 +71,10 @@ class Parser(object):
         if not self.optimizer or not self.scheduler:
             self.optimizer, self.scheduler = self.build_optim(self.model, **args)
         logger.info(f"{self.optimizer}\n")
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+        elapsed = timedelta()
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         best_likelihood = float('inf')
         best_restart = 0
         for n in range(0, args.restarts):
@@ -88,33 +90,32 @@ class Parser(object):
                 logger.info(f"Restart {n+1 :<4d} / {args.restarts}:")
                 logger.info(f"Epoch   {epoch :<4d} / {args.restart_epochs}:")
                 self._train(train.loader, epoch=epoch)
-                likelihood, metric = self._evaluate(dev.loader)
+                likelihood, _ = self._evaluate(dev.loader)
                 t = datetime.now() - start
                 # save the model if it is the best so far
                 saved = ""
                 if likelihood < best_likelihood:
                     best_likelihood, best_restart = likelihood, n
                     if is_master():
-                        self.save(args.path)
+                        self.save(args.path+"_init")
                     saved = "(saved)"
                 logger.info(f"{'current:':10} - likelihood: {-likelihood:.4f}")
                 logger.info(f"{t}s elapsed {saved}\n")
 
         writer = SummaryWriter(comment=args.path.split("/")[1])
 
-
-        elapsed = timedelta()
-        best_e, best_metric = 1, Metric()
-
         logger.info(f"Load best initialization: {best_restart}\n")
-        best_parser = self.load(args.path)
-        self.model = best_parser.model
-        self.optimizer = best_parser.optimizer
-        self.scheduler = best_parser.scheduler
+        if args.restarts > 0:
+            best_parser = self.load(args.path+"_init")
+            self.model = best_parser.model
+            self.optimizer = best_parser.optimizer
+            self.scheduler = best_parser.scheduler
         loss, dev_metric = self._evaluate(dev.loader, writer=writer)
         clusters = dev_metric.clusters
         logger.info(f"{'dev:':6} - likelihood: {loss:.4f} - {dev_metric}\n")
         heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
+
+        best_e, best_metric = args.restart_epochs, dev_metric
 
         def closure(epoch):
             return self._evaluate(dev.loader, writer=writer, epoch=epoch)
@@ -129,7 +130,7 @@ class Parser(object):
 
         write_params(0)
 
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(args.restart_epochs + 1, args.epochs + 1):
 
             start = datetime.now()
             logger.info(f"Epoch   {epoch :<4d} / {args.epochs}:")
@@ -276,12 +277,12 @@ class Parser(object):
         model = cls.MODEL(**args)
         model.load_pretrained(state['pretrained'])
         model.load_state_dict(state['state_dict'], False)
+        model.to(args.device)
         optimizer, scheduler = cls.build_optim(model, **args)
         if 'optimizer_state_dict' in state:
             optimizer.load_state_dict(state['optimizer_state_dict'])
         if 'scheduler_state_dict' in state:
             scheduler.load_state_dict(state['scheduler_state_dict'])
-        model.to(args.device)
         transform = state['transform']
         return cls(args, model, transform,
                    optimizer=optimizer,
