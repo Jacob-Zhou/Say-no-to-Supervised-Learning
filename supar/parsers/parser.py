@@ -25,10 +25,15 @@ class Parser(object):
     NAME = None
     MODEL = None
 
-    def __init__(self, args, model, transform):
+    def __init__(self, args, model, transform, optimizer=None, scheduler=None):
         self.args = args
         self.model = model
         self.transform = transform
+        if optimizer and scheduler:
+            self.optimizer = optimizer
+            self.scheduler = scheduler
+        else:
+            self.optimizer, self.scheduler = self.build_optim(model, **args)
 
     def train(self, train, dev,
               buckets=32,
@@ -63,13 +68,37 @@ class Parser(object):
             self.model = DDP(self.model,
                              device_ids=[dist.get_rank()],
                              find_unused_parameters=True)
-        self.optimizer = Adam(self.model.parameters(),
-                            args.lr,
-                            (args.mu, args.nu),
-                            args.epsilon,
-                            weight_decay=args.weight_decay)
-        self.scheduler = ExponentialLR(self.optimizer, args.decay**(1/args.decay_steps))
+        if not self.optimizer or not self.scheduler:
+            self.optimizer, self.scheduler = self.build_optim(self.model, **args)
         logger.info(f"{self.optimizer}\n")
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        best_likelihood = float('inf')
+        best_restart = 0
+        for n in range(0, args.restarts):
+            self.model = self.MODEL(**args)
+            self.model.load_pretrained(self.WORD.embed).to(device)
+            self.optimizer, self.scheduler = self.build_optim(self.model, **args)
+            if dist.is_initialized():
+                self.model = DDP(self.model,
+                                device_ids=[dist.get_rank()],
+                                find_unused_parameters=True)
+            for epoch in range(1, args.restart_epochs + 1):
+                start = datetime.now()
+                logger.info(f"Restart {n+1 :<4d} / {args.restarts}:")
+                logger.info(f"Epoch   {epoch :<4d} / {args.restart_epochs}:")
+                self._train(train.loader, epoch=epoch)
+                likelihood, metric = self._evaluate(dev.loader)
+                t = datetime.now() - start
+                # save the model if it is the best so far
+                saved = ""
+                if likelihood < best_likelihood:
+                    best_likelihood, best_restart = likelihood, n
+                    if is_master():
+                        self.save(args.path)
+                    saved = "(saved)"
+                logger.info(f"{'current:':10} - likelihood: {-likelihood:.4f}")
+                logger.info(f"{t}s elapsed {saved}\n")
 
         writer = SummaryWriter(comment=args.path.split("/")[1])
 
@@ -77,23 +106,20 @@ class Parser(object):
         elapsed = timedelta()
         best_e, best_metric = 1, Metric()
 
-        logger.info(f"Init:")
+        logger.info(f"Load best initialization: {best_restart}\n")
+        best_parser = self.load(args.path)
+        self.model = best_parser.model
+        self.optimizer = best_parser.optimizer
+        self.scheduler = best_parser.scheduler
         loss, dev_metric = self._evaluate(dev.loader, writer=writer)
         clusters = dev_metric.clusters
-        logger.info(f"{'dev:':6} - loss: {loss:.4f} - {dev_metric}\n")
+        logger.info(f"{'dev:':6} - likelihood: {loss:.4f} - {dev_metric}\n")
         heatmap(clusters.cpu(), list(self.CPOS.vocab.stoi.keys()), f"{args.path}.clusters")
 
         def closure(epoch):
             return self._evaluate(dev.loader, writer=writer, epoch=epoch)
 
         def write_params(epoch):
-            # writer.add_embedding(self.model.tgt_words_gen, metadata=self.TGT_WORD.vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_nums_gen,  metadata=self.TGT_WORD.feature_fields[0].vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_hyps_gen,  metadata=self.TGT_WORD.feature_fields[1].vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_caps_gen,  metadata=self.TGT_WORD.feature_fields[2].vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_usufs_gen, metadata=self.TGT_WORD.feature_fields[3].vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_bsufs_gen, metadata=self.TGT_WORD.feature_fields[4].vocab.itos, global_step=epoch)
-            # writer.add_embedding(self.model.tgt_fsufs_gen, metadata=self.TGT_WORD.feature_fields[5].vocab.itos, global_step=epoch)
             for name, param in self.model.named_parameters():
                 name = name.replace('.', '/')
                 writer.add_histogram(name, param, epoch)
@@ -106,11 +132,11 @@ class Parser(object):
         for epoch in range(1, args.epochs + 1):
 
             start = datetime.now()
-            logger.info(f"Epoch {epoch} / {args.epochs}:")
+            logger.info(f"Epoch   {epoch :<4d} / {args.epochs}:")
 
             inner_best_metric = self._train(train.loader, 
                                             closure=partial(closure, epoch=epoch), 
-                                            best_metric=best_metric, writer=writer, epoch=epoch)
+                                            best_metric=best_metric, epoch=epoch)
             if inner_best_metric > best_metric:
                 best_e, best_metric = epoch, inner_best_metric
             write_params(epoch)
@@ -201,6 +227,26 @@ class Parser(object):
         raise NotImplementedError
 
     @classmethod
+    def build_optim(cls, 
+                    model,
+                    lr=2e-3,
+                    mu=.9,
+                    nu=.9,
+                    epsilon=1e-12,
+                    clip=5.0,
+                    decay=.75,
+                    decay_steps=5000,
+                    weight_decay=1e-6,
+                    **kwargs):
+        optimizer = Adam(model.parameters(),
+                              lr,
+                              (mu, nu),
+                              epsilon,
+                              weight_decay=weight_decay)
+        scheduler = ExponentialLR(optimizer, decay**(1/decay_steps))
+        return optimizer, scheduler
+
+    @classmethod
     def load(cls, path, **kwargs):
         r"""
         Load data fields and model parameters from a pretrained parser.
@@ -227,22 +273,37 @@ class Parser(object):
             state = torch.hub.load_state_dict_from_url(path)
         cls = supar.PARSER[state['name']] if cls.NAME is None else cls
         args = state['args'].update(args)
-        model = cls.MODEL(normalize_paras=not args.em_alg, **args)
+        model = cls.MODEL(**args)
         model.load_pretrained(state['pretrained'])
         model.load_state_dict(state['state_dict'], False)
+        optimizer, scheduler = cls.build_optim(model, **args)
+        if 'optimizer_state_dict' in state:
+            optimizer.load_state_dict(state['optimizer_state_dict'])
+        if 'scheduler_state_dict' in state:
+            scheduler.load_state_dict(state['scheduler_state_dict'])
         model.to(args.device)
         transform = state['transform']
-        return cls(args, model, transform)
+        return cls(args, model, transform,
+                   optimizer=optimizer,
+                   scheduler=scheduler)
 
     def save(self, path):
         model = self.model
         if hasattr(model, 'module'):
             model = self.model.module
         state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+        if 'optimizer' in self.__dict__:
+            optimizer = self.optimizer
+            optimizer_state_dict = optimizer.state_dict()
+        if 'scheduler' in self.__dict__:
+            scheduler = self.scheduler
+            scheduler_state_dict = scheduler.state_dict()
         pretrained = state_dict.pop('pretrained.weight', None)
         state = {'name': self.NAME,
                  'args': self.args,
                  'state_dict': state_dict,
+                 'optimizer_state_dict': optimizer_state_dict,
+                 'scheduler_state_dict': scheduler_state_dict,
                  'pretrained': pretrained,
                  'transform': self.transform}
         torch.save(state, path)

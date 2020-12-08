@@ -126,7 +126,7 @@ class VAEPOSTagger(Parser):
         word_features.append(self.FEAT.compose([seq[1:-1] for seq in self.FEAT.transform(sequences)]))
         return word_features
 
-    def _train(self, loader, closure=None, best_metric=None, writer=None, epoch=0):
+    def _train(self, loader, closure=None, best_metric=None, epoch=0):
         self.model.train()
 
         bar = progress_bar(loader)
@@ -151,7 +151,7 @@ class VAEPOSTagger(Parser):
             self.optimizer.step()
             self.scheduler.step()
             if closure is None:
-                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss:.4f}")
+                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, likelihood: {loss:.4f}")
             else:
                 if step != 0 and step % evaluate_step == 0:
                     saved = ''
@@ -162,7 +162,7 @@ class VAEPOSTagger(Parser):
                         if is_master():
                             self.save(self.args.path)
                             saved = "(saved)"
-                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, loss: {loss:.4f}, {dev_metric} {saved}")
+                bar.set_postfix_str(f" lr: {self.scheduler.get_last_lr()[0]:.4e}, likelihood: {loss:.4f}, {dev_metric} {saved}")
             step += 1
 
         return best_metric
@@ -173,15 +173,17 @@ class VAEPOSTagger(Parser):
         self.model.s_emit = None
 
         total_loss, metric = 0, ManyToOneAccuracy(n_clusters=self.args.n_cpos, n_cpos=self.args.n_cpos)
+        tokens = 0
         features = self.TGT_WORD.features
         word_features = self.get_word_features()
         for words, feats, tgt_words, tags in loader:
             mask = words.ne(self.WORD.pad_index)[:, 2:]
+            tokens += mask.sum()
             likelihood = self.model(words, feats, tgt_words, word_features, features)
             total_loss += self.model.loss(likelihood, mask).sum()
             tag_preds = self.model.decode(likelihood)
             metric(tag_preds, tags, mask)
-        total_loss /= len(loader)
+        total_loss /= tokens
         if writer is not None:
             writer.add_scalar('Eval/Loss', total_loss, global_step=epoch)
             writer.add_scalar('Eval/M-1',  metric.score, global_step=epoch)
