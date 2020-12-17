@@ -27,7 +27,7 @@ def main():
                            help='path to train file')
     subparser.add_argument('--dev', default='data/full_ptb/total.conllx',
                            help='path to dev file')
-    subparser.add_argument('--embed', default='data/glove.6B.100d.txt',
+    subparser.add_argument('--embed', default='data/chelba.uncased.rmnum.1B.100d.i5.txt',
                            help='path to pretrained embeddings')
     subparser.add_argument('--unk', default='unk',
                            help='unk token in pretrained embeddings')

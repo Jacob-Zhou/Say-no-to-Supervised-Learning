@@ -273,7 +273,7 @@ class VAEPOSTagger(Parser):
         transform = CoNLL(FORM=(WORD, FEAT, TGT_WORD), CPOS=CPOS)
 
         train = Dataset(transform, args.train)
-        WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
+        WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None), not_extend_vocab=True)
         TGT_WORD.build(train, args.tgt_min_freq)
         FEAT.build(train)
         CPOS.build(train)
