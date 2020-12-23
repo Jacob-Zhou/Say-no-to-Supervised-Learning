@@ -60,7 +60,7 @@ class Parser(object):
         train = Dataset(self.transform, args.train, **args)
         dev = Dataset(self.transform, args.dev)
         train.build(args.batch_size, args.buckets, True, dist.is_initialized())
-        dev.build(args.batch_size, args.buckets)
+        dev.build(50000, args.buckets)
         logger.info(f"\ntrain: {train}\ndev:   {dev}")
 
         logger.info(f"{self.model}\n")

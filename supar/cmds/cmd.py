@@ -39,3 +39,7 @@ def parse(parser):
     elif args.mode == 'predict':
         parser = Parser.load(args.path)
         parser.predict(**args)
+    elif args.mode == 'finetune':
+        parser = Parser.load(args.path)
+        args.__dict__['path'] = args.path + ".finetune"
+        parser.train(**args)
