@@ -179,22 +179,28 @@ def heatmap(corr, labels=None, name='matrix'):
 
     shape = corr.t().shape
     assert len(shape) == 2
-    shape = (shape[0] * 2, shape[1])
+    shape = (shape[0] * 3, shape[1])
 
     # Set up the matplotlib figure
-    f, ax = plt.subplots(ncols=2, figsize=shape)
+    f, ax = plt.subplots(ncols=3, figsize=shape)
 
     cmap = "RdBu"
 
     # Draw the heatmap with the mask and correct aspect ratio
-    sns.heatmap(corr / (corr.sum(0)[None, :] + 1e-6), cmap=cmap, center=0, ax=ax[0],
+    sns.heatmap(corr / (corr.sum(0, keepdim=True) + 1e-6), cmap=cmap, center=0, ax=ax[0],
                 square=True, linewidths=.5, vmax=1.1, annot=True,
                 xticklabels=False if labels is None else labels, yticklabels=False,
                 cbar=False)
-    sns.heatmap(corr / (corr.sum(1)[:, None] + 1e-6), cmap=cmap, center=0, ax=ax[1],
+    sns.heatmap(corr / (corr.sum(1, keepdim=True) + 1e-6), cmap=cmap, center=0, ax=ax[1],
                 square=True, linewidths=.5, vmax=1.1, annot=True,
                 xticklabels=False if labels is None else labels, yticklabels=False,
                 cbar=False)
+    sns.heatmap(corr, cmap=cmap, center=0, ax=ax[2],
+                square=True, linewidths=.5, annot=True,
+                xticklabels=False if labels is None else labels, yticklabels=False,
+                cbar=False)
+    plt.margins(0, 0)
+    plt.subplots_adjust(left=0.04, bottom=0., right=0.96, top=1.)
     plt.savefig(f'{name}.png')
     plt.close()
 
