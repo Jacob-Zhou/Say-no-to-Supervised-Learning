@@ -195,7 +195,7 @@ def heatmap(corr, labels=None, name='matrix'):
                 square=True, linewidths=.5, vmax=1.1, annot=True,
                 xticklabels=False if labels is None else labels, yticklabels=False,
                 cbar=False)
-    sns.heatmap(corr, cmap=cmap, center=0, ax=ax[2],
+    sns.heatmap(100. * corr / corr.sum().float(), cmap=cmap, center=0, ax=ax[2],
                 square=True, linewidths=.5, annot=True,
                 xticklabels=False if labels is None else labels, yticklabels=False,
                 cbar=False)
