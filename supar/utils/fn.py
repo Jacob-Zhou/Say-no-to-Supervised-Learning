@@ -186,18 +186,20 @@ def heatmap(corr, labels=None, name='matrix'):
 
     cmap = "RdBu"
 
+    ylabels = [f"{i :2d}" for i in range(45)]
+
     # Draw the heatmap with the mask and correct aspect ratio
     sns.heatmap(corr / (corr.sum(0, keepdim=True) + 1e-6), cmap=cmap, center=0, ax=ax[0],
                 square=True, linewidths=.5, vmax=1.1, annot=True,
-                xticklabels=False if labels is None else labels, yticklabels=False,
+                xticklabels=False if labels is None else labels, yticklabels=ylabels,
                 cbar=False)
     sns.heatmap(corr / (corr.sum(1, keepdim=True) + 1e-6), cmap=cmap, center=0, ax=ax[1],
                 square=True, linewidths=.5, vmax=1.1, annot=True,
-                xticklabels=False if labels is None else labels, yticklabels=False,
+                xticklabels=False if labels is None else labels, yticklabels=ylabels,
                 cbar=False)
     sns.heatmap(100. * corr / corr.sum().float(), cmap=cmap, center=0, ax=ax[2],
                 square=True, linewidths=.5, annot=True,
-                xticklabels=False if labels is None else labels, yticklabels=False,
+                xticklabels=False if labels is None else labels, yticklabels=ylabels,
                 cbar=False)
     plt.margins(0, 0)
     plt.subplots_adjust(left=0.04, bottom=0., right=0.96, top=1.)
