@@ -203,7 +203,7 @@ class VAEPOSTagger(Parser):
             lens = mask.sum(1).tolist()
             likelihood = self.model(words, feats, tgt_words, word_features, features)
             # tag_preds = self.model.decode(likelihood)
-            tag_probs, tag_preds = likelihood.softmax(-1).max(-1)
+            tag_probs, tag_preds = (likelihood - likelihood.logsumexp(-1, keepdim=True)).exp().max(-1)
             tags.extend(tag_preds[mask].split(lens))
             probs.extend([prob.tolist() for prob in tag_probs[mask].split(lens)])
         tags = [[f"#C{t}#" for t in seq.tolist()] for seq in tags]

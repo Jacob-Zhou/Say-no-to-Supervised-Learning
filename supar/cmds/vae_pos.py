@@ -23,9 +23,9 @@ def main():
                            help='max length of the sentences')
     subparser.add_argument('--buckets', default=32, type=int,
                            help='max num of buckets to use')
-    subparser.add_argument('--train', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--train', default='data/ptb/total.conllx',
                            help='path to train file')
-    subparser.add_argument('--dev', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--dev', default='data/ptb/total.conllx',
                            help='path to dev file')
     subparser.add_argument('--embed', default='data/chelba.uncased.rmnum.1B.100d.i5.txt',
                            help='path to pretrained embeddings')
@@ -41,9 +41,9 @@ def main():
                            help='max length of the sentences')
     subparser.add_argument('--buckets', default=32, type=int,
                            help='max num of buckets to use')
-    subparser.add_argument('--train', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--train', default='data/ptb/total.conllx',
                            help='path to train file')
-    subparser.add_argument('--dev', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--dev', default='data/ptb/total.conllx',
                            help='path to dev file')
 
     # evaluate
@@ -52,7 +52,7 @@ def main():
                            help='whether to include punctuation')
     subparser.add_argument('--buckets', default=8, type=int,
                            help='max num of buckets to use')
-    subparser.add_argument('--data', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--data', default='data/ptb/total.conllx',
                            help='path to dataset')
     # predict
     subparser = subparsers.add_parser('predict', help='Use a trained parser to make predictions.')
@@ -60,7 +60,7 @@ def main():
                            help='whether to output probs')
     subparser.add_argument('--buckets', default=8, type=int,
                            help='max num of buckets to use')
-    subparser.add_argument('--data', default='data/full_ptb/total.conllx',
+    subparser.add_argument('--data', default='data/ptb/total.conllx',
                            help='path to dataset')
     subparser.add_argument('--pred', default='pred.conllx',
                            help='path to predicted result')
